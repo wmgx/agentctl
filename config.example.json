@@ -1,0 +1,21 @@
+{
+  "feishu": {
+    "app_id": "cli_xxxx",
+    "app_secret": "xxxx",
+    "bot_name": "ClaudeBot"
+  },
+  "anthropic": {
+    "api_key": "sk-ant-xxxx",
+    "model": "claude-haiku-4-5-20250929",
+    "base_url": "",
+    "auth_token": ""
+  },
+  "default_cwd": "/Users/bytedance/go",
+  "repos": {
+    "order": "/Users/bytedance/go/order-service",
+    "contract": "/Users/bytedance/go/contract-service"
+  },
+  "idle_timeout_min": 30,
+  "dangerous_tools": ["rm ", "git push", "git reset"],
+  "claude_cli_path": "claude"
+}

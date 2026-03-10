@@ -1,0 +1,469 @@
+package router
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/wmgx/agentctl/internal/claude"
+	"github.com/wmgx/agentctl/internal/config"
+	"github.com/wmgx/agentctl/internal/feishu"
+	"github.com/wmgx/agentctl/internal/intent"
+	"github.com/wmgx/agentctl/internal/session"
+)
+
+const streamThrottle = time.Second
+
+
+type Router struct {
+	cfg          *config.Config
+	feishuCli    *feishu.Client
+	classifier   *intent.Classifier
+	store        *session.Store
+	adapter      *claude.Adapter
+	pending      *feishu.PendingAction
+	chainTracker *feishu.ReplyChainTracker
+}
+
+func New(cfg *config.Config, feishuCli *feishu.Client, classifier *intent.Classifier,
+	store *session.Store, adapter *claude.Adapter, pending *feishu.PendingAction) *Router {
+	return &Router{
+		cfg:          cfg,
+		feishuCli:    feishuCli,
+		classifier:   classifier,
+		store:        store,
+		adapter:      adapter,
+		pending:      pending,
+		chainTracker: feishu.NewReplyChainTracker(1000),
+	}
+}
+
+func (r *Router) HandleRouterMessage(ctx context.Context, msg feishu.IncomingMessage) {
+	log.Printf("[router] received message: chat_type=%s, text=%s", msg.ChatType, msg.Text)
+
+	if msg.Text == "" {
+		log.Printf("[router] empty text, ignoring")
+		return
+	}
+
+	// P2P 引用链深度检测：达到阈值时记录深度，在本条消息回复后再发卡片
+	upgradeDepth := 0
+	if msg.ChatType == "p2p" {
+		upgradeDepth = r.checkChainDepth(ctx, msg)
+	}
+
+	activeSessions := r.store.ListActive()
+	result, err := r.classifier.Classify(ctx, msg.Text, activeSessions)
+	if err != nil {
+		log.Printf("[router] classify error: %v", err)
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("⚠️ 意图分类失败（已切换直接对话）: %v", err))
+		r.handleDirect(ctx, msg)
+	} else {
+		log.Printf("[router] classified: intent=%s, topic=%s, action=%s", result.Intent, result.Topic, result.SystemAction)
+		switch result.Intent {
+		case intent.IntentDirect:
+			r.handleDirect(ctx, msg)
+		case intent.IntentSession:
+			r.handleSession(ctx, msg, result)
+		case intent.IntentSystem:
+			r.handleSystem(ctx, msg, result)
+		default:
+			log.Printf("[router] unknown intent: %s, treating as direct", result.Intent)
+			r.handleDirect(ctx, msg)
+		}
+	}
+
+	// 本条消息已回复，现在发送升级群聊卡片
+	if upgradeDepth > 0 {
+		go r.sendChainUpgradeCard(ctx, msg, upgradeDepth)
+	}
+}
+
+// checkChainDepth 检测 P2P 引用链深度。
+// 返回达到阈值时的深度（> 0），否则返回 0。
+// 注意：仅在深度恰好等于阈值时触发，避免重复发卡片。
+func (r *Router) checkChainDepth(ctx context.Context, msg feishu.IncomingMessage) int {
+	// 无引用：重置链
+	if msg.ParentMessageID == "" {
+		r.chainTracker.Track(msg.SenderID, msg.MessageID, "")
+		return 0
+	}
+
+	// 用户已选择不升级，直接放行
+	if r.chainTracker.IsDismissed(msg.SenderID) {
+		return 0
+	}
+
+	depth := r.chainTracker.Track(msg.SenderID, msg.MessageID, msg.ParentMessageID)
+
+	// depth==1 表示 parentMsgID 不在内存中，向上追溯历史
+	if depth == 1 {
+		ancestors := r.buildChainFromAPI(ctx, msg.ParentMessageID)
+		if len(ancestors) > 0 {
+			r.chainTracker.PrependChain(msg.SenderID, ancestors)
+			depth = len(ancestors) + 1
+		}
+	}
+
+	log.Printf("[chain] sender=%s depth=%d", msg.SenderID, depth)
+
+	// 仅在首次达到阈值时触发（>= 避免因链包含 bot 回复 ID 导致深度跳过阈值）
+	// 同时检查上一次 Track 前的深度未达到阈值，防止每条消息都弹卡片
+	if depth >= r.cfg.ChainUpgradeThreshold {
+		return depth
+	}
+	return 0
+}
+
+// sendChainUpgradeCard 发送升级群聊确认卡片，并处理用户选择。
+// 在本条消息回复完成后由 goroutine 调用。
+func (r *Router) sendChainUpgradeCard(ctx context.Context, msg feishu.IncomingMessage, depth int) {
+	requestID := uuid.New().String()
+	card := feishu.ChainUpgradeCard(depth, requestID)
+	cardMsgID, err := r.feishuCli.SendCard(ctx, msg.ChatID, card)
+	if err != nil {
+		log.Printf("[chain] send upgrade card error: %v", err)
+		return
+	}
+
+	ch := r.pending.Wait(requestID)
+	select {
+	case action := <-ch:
+		switch action.Action {
+		case "upgrade_group":
+			// 立即禁用按钮，告知正在处理
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgrading", depth))
+			r.handleChainUpgrade(ctx, msg)
+			// 升级完成后更新卡片状态
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgraded", depth))
+		case "dismiss_upgrade":
+			r.chainTracker.Dismiss(msg.SenderID)
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("dismissed", depth))
+		default:
+			log.Printf("[chain] unknown action: %s", action.Action)
+		}
+	case <-time.After(10 * time.Minute):
+		log.Printf("[chain] upgrade prompt timeout for sender %s", msg.SenderID)
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("timeout", depth))
+	}
+}
+
+// buildChainFromAPI 从给定消息 ID 向上追溯引用链，返回祖先消息 ID 列表（从旧到新）
+// 最多追溯 10 层，防止无限循环
+func (r *Router) buildChainFromAPI(ctx context.Context, startMsgID string) []string {
+	const maxDepth = 10
+	var chain []string
+	currentID := startMsgID
+
+	for i := 0; i < maxDepth; i++ {
+		info, err := r.feishuCli.GetMessage(ctx, currentID)
+		if err != nil {
+			log.Printf("[chain] GetMessage %s error: %v", currentID, err)
+			break
+		}
+		log.Printf("[chain] API traverse: id=%s sender_type=%s parent=%q text=%.30q", info.MessageID, info.SenderType, info.ParentID, info.Text)
+		// 前置：旧消息在前
+		chain = append([]string{info.MessageID}, chain...)
+		if info.ParentID == "" {
+			break
+		}
+		currentID = info.ParentID
+	}
+	return chain
+}
+
+// handleChainUpgrade 执行升级流程：建群、合并转发历史、注入 Claude 上下文
+func (r *Router) handleChainUpgrade(ctx context.Context, msg feishu.IncomingMessage) {
+	chainMsgIDs := r.chainTracker.GetChain(msg.SenderID)
+	if len(chainMsgIDs) == 0 {
+		log.Printf("[chain] upgrade: no chain for sender %s", msg.SenderID)
+		return
+	}
+
+	// 1. 获取链上所有消息内容，构造历史上下文
+	historyLines := r.fetchChainLines(ctx, msg.SenderID, "")
+
+	// 2. 建群，群名取第一条用户消息的摘要
+	groupName := fmt.Sprintf("[Claude] 私聊升级 %s", time.Now().Format("01-02 15:04"))
+	for _, line := range historyLines {
+		if strings.HasPrefix(line, "[用户]") {
+			summary := strings.TrimPrefix(line, "[用户]: ")
+			runes := []rune(summary)
+			if len(runes) > 20 {
+				runes = runes[:20]
+				summary = string(runes) + "..."
+			}
+			groupName = fmt.Sprintf("[Claude] %s", summary)
+			break
+		}
+	}
+
+	chatID, err := r.feishuCli.CreateGroup(ctx, groupName)
+	if err != nil {
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("建群失败: %v", err))
+		return
+	}
+
+	// 3. 拉入用户并转移群主
+	if err := r.feishuCli.AddMember(ctx, chatID, msg.SenderID); err != nil {
+		log.Printf("[chain] add member error: %v", err)
+	}
+	if err := r.feishuCli.TransferOwner(ctx, chatID, msg.SenderID); err != nil {
+		log.Printf("[chain] transfer owner error: %v", err)
+	}
+
+	// 4. 合并转发历史消息
+	if err := r.feishuCli.MergeForwardMessages(ctx, chainMsgIDs, chatID); err != nil {
+		log.Printf("[chain] merge forward error: %v", err)
+		// 非致命，继续建立 session
+	}
+
+	// 5. 构造历史上下文注入消息
+	var contextPrompt string
+	if len(historyLines) > 0 {
+		contextPrompt = "以下是我们之前在私聊中的对话历史，请了解背景后继续：\n\n" +
+			strings.Join(historyLines, "\n") +
+			"\n\n---\n请基于以上历史继续对话。"
+	} else {
+		contextPrompt = "这是一个从私聊升级的群聊会话，请继续之前的对话。"
+	}
+
+	// 6. 用历史上下文初始化 Claude session，获取 CLISessionID
+	var cliSessionID string
+	initResult, err := r.adapter.RunOnceWithSession(ctx, contextPrompt, r.cfg.DefaultCwd)
+	if err != nil {
+		log.Printf("[chain] history injection error: %v", err)
+	} else {
+		cliSessionID = initResult.SessionID
+		log.Printf("[chain] history injected, sessionID=%s", cliSessionID)
+	}
+
+	// 7. 创建 Session
+	sess := &session.Session{
+		ID:           uuid.New().String(),
+		ChatID:       chatID,
+		Name:         groupName,
+		WorkingDir:   r.cfg.DefaultCwd,
+		CLISessionID: cliSessionID,
+		Model:        r.cfg.SessionModel,
+		Status:       session.StatusActive,
+		CreatedAt:    time.Now(),
+		LastActiveAt: time.Now(),
+	}
+	r.store.Put(sess)
+	r.store.Save()
+
+	r.feishuCli.SendText(ctx, chatID, "✅ 历史对话已注入，Claude 已了解背景，请继续聊吧！")
+	r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("已升级为群聊，请到新群继续对话 👆"))
+
+	// 8. 清空链
+	r.chainTracker.Reset(msg.SenderID)
+}
+
+func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
+	log.Printf("[router] handleDirect: %s", msg.Text)
+
+	prompt := msg.Text
+	// P2P 引用场景：把链上历史消息拼入 prompt，让 Claude 知道上下文
+	if msg.ChatType == "p2p" && msg.ParentMessageID != "" {
+		if lines := r.fetchChainLines(ctx, msg.SenderID, msg.MessageID); len(lines) > 0 {
+			prompt = "以下是之前的对话历史：\n\n" +
+				strings.Join(lines, "\n") +
+				"\n\n当前消息：" + msg.Text
+		}
+	}
+
+	// 先发一个流式卡片作为回复占位
+	initCard := feishu.StreamingCard("正在思考...", false, "")
+	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, initCard)
+	if err != nil {
+		log.Printf("[router] reply card error: %v, falling back to text", err)
+		text, err := r.adapter.RunOnce(ctx, prompt, "", false)
+		if err != nil {
+			r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("处理失败: %v", err))
+			return
+		}
+		if text == "" {
+			text = "（无输出）"
+		}
+		r.feishuCli.ReplyText(ctx, msg.MessageID, text)
+		return
+	}
+
+	var (
+		textBuf    strings.Builder
+		lastUpdate time.Time
+		startTime  = time.Now()
+	)
+
+	r.adapter.Run(ctx, claude.RunOptions{
+		Prompt: prompt,
+	}, func(event claude.Event) {
+		switch event.Type {
+		case "text":
+			textBuf.WriteString(event.Text)
+			elapsed := int(time.Since(startTime).Seconds())
+			if time.Since(lastUpdate) > streamThrottle {
+				r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(textBuf.String(), false, "", elapsed))
+				lastUpdate = time.Now()
+			}
+
+		case "result":
+			tokenInfo := ""
+			if event.Usage != nil {
+				tokenInfo = fmt.Sprintf("✅ Input: %d | Output: %d | Cost: $%.4f",
+					event.Usage.InputTokens, event.Usage.OutputTokens, event.CostUSD)
+			}
+			finalText := textBuf.String()
+			if finalText == "" {
+				finalText = event.Text
+			}
+			if finalText == "" {
+				finalText = "（无输出）"
+			}
+			elapsed := int(time.Since(startTime).Seconds())
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed))
+		}
+	})
+}
+
+// fetchChainLines 获取链上所有历史消息（不含当前消息），格式化为 [角色]: 文本 的列表
+func (r *Router) fetchChainLines(ctx context.Context, senderID, currentMsgID string) []string {
+	chainMsgIDs := r.chainTracker.GetChain(senderID)
+	var lines []string
+	for _, msgID := range chainMsgIDs {
+		if msgID == currentMsgID {
+			continue // 当前消息已在 prompt 里，跳过
+		}
+		info, err := r.feishuCli.GetMessage(ctx, msgID)
+		if err != nil || info.Text == "" {
+			continue
+		}
+		role := "用户"
+		if info.SenderType == "app" {
+			role = "Claude"
+		}
+		lines = append(lines, fmt.Sprintf("[%s]: %s", role, info.Text))
+	}
+	return lines
+}
+
+func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
+	// 先展示分析结果，让用户确认是否要建立群聊
+	topic := result.Topic
+	if topic == "" {
+		topic = "未识别主题"
+	}
+	reason := result.Reason
+	if reason == "" {
+		reason = "该任务预计需要多轮交互，建议建立独立会话以保持上下文。"
+	}
+
+	confirmID := uuid.New().String()
+	card := feishu.SessionConfirmCard(topic, reason, confirmID)
+	r.feishuCli.ReplyCard(ctx, msg.MessageID, card)
+
+	ch := r.pending.Wait(confirmID)
+	go func() {
+		select {
+		case action := <-ch:
+			switch action.Action {
+			case "confirm_session":
+				r.startSessionCreation(ctx, msg, result)
+			case "deny_session":
+				r.handleDirect(ctx, msg)
+			}
+		case <-time.After(5 * time.Minute):
+			// 超时默认直接回复
+			r.handleDirect(ctx, msg)
+		}
+	}()
+}
+
+func (r *Router) startSessionCreation(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
+	requestID := uuid.New().String()
+
+	card := feishu.CwdSelectionCard(r.cfg.Repos, r.cfg.DefaultCwd, requestID)
+	r.feishuCli.SendCard(ctx, msg.ChatID, card)
+
+	ch := r.pending.Wait(requestID)
+	go func() {
+		select {
+		case action := <-ch:
+			cwd := action.Value["cwd"]
+			if cwd == "" {
+				cwd = r.cfg.DefaultCwd
+			}
+			r.createSession(ctx, msg, result, cwd)
+		case <-time.After(5 * time.Minute):
+			r.feishuCli.SendText(ctx, msg.ChatID, "选择超时，请重新发送")
+		}
+	}()
+}
+
+func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd string) {
+	name := result.Topic
+	if name == "" {
+		name = "新会话"
+	}
+	groupName := fmt.Sprintf("[Claude] %s", name)
+
+	chatID, err := r.feishuCli.CreateGroup(ctx, groupName)
+	if err != nil {
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("创建群失败: %v", err))
+		return
+	}
+
+	if err := r.feishuCli.AddMember(ctx, chatID, msg.SenderID); err != nil {
+		log.Printf("add member error: %v", err)
+	}
+	if err := r.feishuCli.TransferOwner(ctx, chatID, msg.SenderID); err != nil {
+		log.Printf("[session] transfer owner error: %v", err)
+	}
+
+	sess := &session.Session{
+		ID:           uuid.New().String(),
+		ChatID:       chatID,
+		Name:         name,
+		Tags:         result.Tags,
+		WorkingDir:   cwd,
+		Model:        r.cfg.SessionModel,
+		Status:       session.StatusActive,
+		CreatedAt:    time.Now(),
+		LastActiveAt: time.Now(),
+	}
+	r.store.Put(sess)
+	r.store.Save()
+
+	r.feishuCli.SendText(ctx, chatID, fmt.Sprintf("会话已创建\n主题: %s\n工作目录: %s\n\n正在处理你的请求...", name, cwd))
+	r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("已创建新会话 [%s]，请到新群继续", name))
+}
+
+func (r *Router) handleSystem(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
+	switch result.SystemAction {
+	case intent.ActionListSessions:
+		sessions := r.store.ListActive()
+		if len(sessions) == 0 {
+			r.feishuCli.SendText(ctx, msg.ChatID, "当前没有活跃会话")
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("活跃会话：\n")
+		for _, s := range sessions {
+			ago := time.Since(s.LastActiveAt).Truncate(time.Minute)
+			sb.WriteString(fmt.Sprintf("• [%s] tags:%v %s前活跃 (%s)\n", s.Name, s.Tags, ago, s.Status))
+		}
+		r.feishuCli.SendText(ctx, msg.ChatID, sb.String())
+
+	case intent.ActionStatus:
+		sessions := r.store.ListActive()
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("系统状态：\n活跃会话: %d\n默认目录: %s", len(sessions), r.cfg.DefaultCwd))
+
+	default:
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("系统操作 %s 暂未实现", result.SystemAction))
+	}
+}

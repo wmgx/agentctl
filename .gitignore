@@ -1,0 +1,29 @@
+# Binaries
+server
+agentctl
+*.exe
+*.out
+
+# Config (contains secrets)
+config.json
+
+# Logs
+log/
+*.log
+
+# Temp files
+temp/
+tmp/
+
+# IDE
+.idea/
+.omc/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
