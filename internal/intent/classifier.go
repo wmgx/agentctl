@@ -43,7 +43,7 @@ const defaultSystemPromptTpl = `你是意图分类器。根据用户消息和现
 - "session": 预期 {{threshold}}+ 轮才能完成，或任务需要持续迭代、需要访问本地文件/执行命令。用户明确说"建群/开项目"也算。
 - "system": 管理系统自身。如:列出会话、关闭会话、管理标签、管理定时任务、系统状态
 
-系统管理子类型:
+系统管理子类型（仅限以下值，禁止输出 create_session 或其他自造值）:
 - list_sessions: 列出会话
 - close_session: 关闭会话
 - add_tag / remove_tag: 管理标签(params.tag_name)
@@ -52,6 +52,7 @@ const defaultSystemPromptTpl = `你是意图分类器。根据用户消息和现
 - toggle_cron: 启停定时任务(params.cron_name)
 - delete_cron: 删除定时任务(params.cron_name)
 - status: 系统状态
+注意：用户说"建群/新建会话/开始项目"属于 "session" 意图，不属于 "system"
 
 返回格式:
 {"intent":"direct|session|system","topic":"主题摘要","tags":["关键词"],"reason":"一句话说明分类理由，session 时需解释预计需要多少轮、为何需要持续会话","system_action":"子类型","params":{},"cron_schedule_hint":"","cron_prompt":"","cron_name":""}`

@@ -31,6 +31,7 @@ type CardAction struct {
 	MessageID string
 	Action    string
 	Value     map[string]string
+	FormValue map[string]string
 }
 
 type EventListener struct {
@@ -108,10 +109,16 @@ func (el *EventListener) Start(ctx context.Context) error {
 		}
 
 		strValue := make(map[string]string)
+		formValue := make(map[string]string)
 		if req.Action != nil {
 			for k, v := range req.Action.Value {
 				if s, ok := v.(string); ok {
 					strValue[k] = s
+				}
+			}
+			for k, v := range req.Action.FormValue {
+				if s, ok := v.(string); ok {
+					formValue[k] = s
 				}
 			}
 		}
@@ -121,9 +128,21 @@ func (el *EventListener) Start(ctx context.Context) error {
 			MessageID: msgID,
 			Action:    strValue["action"],
 			Value:     strValue,
+			FormValue: formValue,
 		}
 		log.Printf("[event] card action: open_id=%s, action=%s, request_id=%s", openID, action.Action, strValue["request_id"])
-		el.onCardAction(ctx, action)
+		resp := el.onCardAction(ctx, action)
+		if resp != "" {
+			var cardResp map[string]interface{}
+			if err := json.Unmarshal([]byte(resp), &cardResp); err == nil {
+				return &callback.CardActionTriggerResponse{
+					Card: &callback.Card{
+						Type: "card_json",
+						Data: cardResp["card"],
+					},
+				}, nil
+			}
+		}
 		return nil, nil
 	})
 

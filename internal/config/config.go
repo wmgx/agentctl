@@ -35,6 +35,8 @@ type Config struct {
 	BotOpenID              string            `json:"bot_open_id,omitempty"`             // Bot 自身的 open_id，用于区分历史消息发送者
 	ChainUpgradeThreshold  int               `json:"chain_upgrade_threshold,omitempty"` // P2P 引用链触发升级群聊的轮数，默认 4
 	LogRetentionDays       int               `json:"log_retention_days,omitempty"`      // 日志保留天数，超过后自动删除，默认 7
+
+	path string // 配置文件路径，运行时赋值，不序列化
 }
 
 func DefaultDataDir() string {
@@ -160,6 +162,7 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.path = path
 	if cfg.IdleTimeoutMin == 0 {
 		cfg.IdleTimeoutMin = 30
 	}
@@ -185,6 +188,44 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Save 将当前配置写回文件。
+func (c *Config) Save() error {
+	if c.path == "" {
+		return fmt.Errorf("config path not set")
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(c.path, data, 0600)
+}
+
+// AddRepo 将路径添加到 Repos（若未存在），用目录名作为 key，并持久化到文件。
+// 返回 true 表示实际新增了条目。
+func (c *Config) AddRepo(dirPath string) (bool, error) {
+	if c.Repos == nil {
+		c.Repos = make(map[string]string)
+	}
+	for _, v := range c.Repos {
+		if v == dirPath {
+			return false, nil // 已存在
+		}
+	}
+	name := filepath.Base(dirPath)
+	// 若名称已被占用，加数字后缀
+	if _, exists := c.Repos[name]; exists {
+		for i := 2; ; i++ {
+			candidate := fmt.Sprintf("%s%d", name, i)
+			if _, exists := c.Repos[candidate]; !exists {
+				name = candidate
+				break
+			}
+		}
+	}
+	c.Repos[name] = dirPath
+	return true, c.Save()
 }
 
 func (c *Config) validate() error {

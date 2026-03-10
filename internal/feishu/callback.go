@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"log"
 	"sync"
 )
 
@@ -11,8 +12,9 @@ type PendingAction struct {
 }
 
 type ActionResult struct {
-	Action string
-	Value  map[string]string
+	Action    string
+	Value     map[string]string
+	FormValue map[string]string
 }
 
 func NewPendingAction() *PendingAction {
@@ -38,10 +40,12 @@ func (pa *PendingAction) Resolve(requestID string, result ActionResult) bool {
 	pa.mu.Unlock()
 
 	if !ok {
+		log.Printf("[pending] Resolve: no channel for request_id=%s (stale card?)", requestID)
 		return false
 	}
 	ch <- result
 	close(ch)
+	log.Printf("[pending] Resolve: dispatched action=%s for request_id=%s", result.Action, requestID)
 	return true
 }
 

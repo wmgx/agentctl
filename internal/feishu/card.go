@@ -89,9 +89,13 @@ func ApprovalCard(toolName, toolInput, requestID string) map[string]interface{} 
 	}
 }
 
-// SessionConfirmCard 展示意图分析结果，让用户确认是否建立群聊会话
-func SessionConfirmCard(topic, reason, requestID string) map[string]interface{} {
+// SessionConfirmCard 展示意图分析结果，让用户确认是否建立群聊会话，并输入工作目录
+func SessionConfirmCard(topic, reason, defaultCwd, requestID string) map[string]interface{} {
 	body := fmt.Sprintf("**主题**：%s\n\n**分析**：%s", topic, reason)
+	placeholder := defaultCwd
+	if placeholder == "" {
+		placeholder = "请输入工作目录绝对路径"
+	}
 	return map[string]interface{}{
 		"header": map[string]interface{}{
 			"title":    map[string]string{"tag": "plain_text", "content": "🤔 需要建立独立会话吗？"},
@@ -102,18 +106,40 @@ func SessionConfirmCard(topic, reason, requestID string) map[string]interface{} 
 				"tag":     "markdown",
 				"content": body,
 			},
+			map[string]interface{}{"tag": "hr"},
 			map[string]interface{}{
-				"tag": "action",
-				"actions": []interface{}{
+				"tag":  "form",
+				"name": "session_form",
+				"elements": []interface{}{
 					map[string]interface{}{
-						"tag":  "button",
-						"text": map[string]string{"tag": "plain_text", "content": "✅ 建立群聊会话"},
-						"type": "primary",
+						"tag":  "input",
+						"name": "cwd",
+						"label": map[string]string{
+							"tag":     "plain_text",
+							"content": "工作目录",
+						},
+						"label_position": "left",
+						"placeholder": map[string]string{
+							"tag":     "plain_text",
+							"content": placeholder,
+						},
+					},
+					map[string]interface{}{
+						"tag":         "button",
+						"name":        "submit_btn",
+						"action_type": "form_submit",
+						"text":        map[string]string{"tag": "plain_text", "content": "✅ 建立群聊会话"},
+						"type":        "primary",
 						"value": map[string]string{
 							"action":     "confirm_session",
 							"request_id": requestID,
 						},
 					},
+				},
+			},
+			map[string]interface{}{
+				"tag": "action",
+				"actions": []interface{}{
 					map[string]interface{}{
 						"tag":  "button",
 						"text": map[string]string{"tag": "plain_text", "content": "💬 直接回复就好"},
@@ -129,57 +155,78 @@ func SessionConfirmCard(topic, reason, requestID string) map[string]interface{} 
 	}
 }
 
+// CwdSelectionCard 生成工作目录选择卡片（飞书互动卡片 v2）。
+// 有预设 repos 时展示快速选择按钮；底部始终提供文本输入框供手动输入路径。
 func CwdSelectionCard(repos map[string]string, defaultCwd, requestID string) map[string]interface{} {
-	var actions []interface{}
-	for name, path := range repos {
-		actions = append(actions, map[string]interface{}{
-			"tag":  "button",
-			"text": map[string]string{"tag": "plain_text", "content": name},
-			"type": "default",
-			"value": map[string]string{
-				"action":     "select_cwd",
-				"cwd":        path,
-				"request_id": requestID,
+	var elements []interface{}
+
+	// 预设目录快捷按钮（有配置才显示）
+	if len(repos) > 0 {
+		var actions []interface{}
+		for name, path := range repos {
+			actions = append(actions, map[string]interface{}{
+				"tag":  "button",
+				"text": map[string]string{"tag": "plain_text", "content": name},
+				"type": "default",
+				"value": map[string]string{
+					"action":     "select_cwd",
+					"cwd":        path,
+					"request_id": requestID,
+				},
+			})
+		}
+		elements = append(elements,
+			map[string]interface{}{
+				"tag":     "markdown",
+				"content": "**快速选择预设目录：**",
 			},
-		})
-	}
-	if defaultCwd != "" {
-		actions = append(actions, map[string]interface{}{
-			"tag":  "button",
-			"text": map[string]string{"tag": "plain_text", "content": "默认目录"},
-			"type": "default",
-			"value": map[string]string{
-				"action":     "select_cwd",
-				"cwd":        defaultCwd,
-				"request_id": requestID,
+			map[string]interface{}{
+				"tag":     "action",
+				"actions": actions,
 			},
-		})
+			map[string]interface{}{"tag": "hr"},
+		)
 	}
-	actions = append(actions, map[string]interface{}{
-		"tag":  "button",
-		"text": map[string]string{"tag": "plain_text", "content": "输入自定义路径"},
-		"type": "default",
-		"value": map[string]string{
-			"action":     "custom_cwd",
-			"request_id": requestID,
+
+	// 文本输入框（始终显示）
+	placeholder := defaultCwd
+	if placeholder == "" {
+		placeholder = "请输入工作目录绝对路径"
+	}
+	elements = append(elements,
+		map[string]interface{}{
+			"tag":  "form",
+			"name": "cwd_form",
+			"elements": []interface{}{
+				map[string]interface{}{
+					"tag":        "input",
+					"name":       "custom_cwd",
+					"max_length": 500,
+					"placeholder": map[string]string{
+						"tag":     "plain_text",
+						"content": placeholder,
+					},
+				},
+				map[string]interface{}{
+					"tag":         "button",
+					"action_type": "form_submit",
+					"text":        map[string]string{"tag": "plain_text", "content": "✅ 确认路径"},
+					"type":        "primary",
+					"value": map[string]string{
+						"action":     "select_cwd",
+						"request_id": requestID,
+					},
+				},
+			},
 		},
-	})
+	)
 
 	return map[string]interface{}{
 		"header": map[string]interface{}{
 			"title":    map[string]string{"tag": "plain_text", "content": "选择工作目录"},
 			"template": "blue",
 		},
-		"elements": []interface{}{
-			map[string]interface{}{
-				"tag":     "markdown",
-				"content": "请选择代码仓库：",
-			},
-			map[string]interface{}{
-				"tag":     "action",
-				"actions": actions,
-			},
-		},
+		"elements": elements,
 	}
 }
 
@@ -219,6 +266,39 @@ func ChainUpgradeCard(depth int, requestID string) map[string]interface{} {
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+// CwdSelectionCardDone 生成工作目录选择卡片的完成状态（禁用交互）
+// status: "processing" | "selected" | "timeout"
+func CwdSelectionCardDone(status string) map[string]interface{} {
+	var headerTitle, headerColor, bodyText string
+	switch status {
+	case "processing":
+		headerTitle = "⏳ 正在处理..."
+		headerColor = "yellow"
+		bodyText = "正在创建会话，请稍候..."
+	case "selected":
+		headerTitle = "✅ 已选择工作目录"
+		headerColor = "green"
+		bodyText = "工作目录已确认，会话创建中..."
+	default: // timeout
+		headerTitle = "⌛ 选择已超时"
+		headerColor = "grey"
+		bodyText = "选择超时，请重新发送消息。"
+	}
+
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": headerTitle},
+			"template": headerColor,
+		},
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":     "markdown",
+				"content": bodyText,
 			},
 		},
 	}
@@ -273,6 +353,32 @@ func ChainUpgradeCardDone(status string, depth int) map[string]interface{} {
 						"disabled": true,
 					},
 				},
+			},
+		},
+	}
+}
+
+// SessionConfirmCardDone 生成建群确认卡片的完成状态（禁用交互）
+func SessionConfirmCardDone(confirmed bool) map[string]interface{} {
+	var headerTitle, headerColor, bodyText string
+	if confirmed {
+		headerTitle = "✅ 已创建群聊会话"
+		headerColor = "green"
+		bodyText = "会话已创建，请到新群继续对话。"
+	} else {
+		headerTitle = "已选择直接回复"
+		headerColor = "grey"
+		bodyText = "好的，直接在私聊中回复。"
+	}
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": headerTitle},
+			"template": headerColor,
+		},
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":     "markdown",
+				"content": bodyText,
 			},
 		},
 	}

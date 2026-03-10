@@ -116,7 +116,8 @@ func main() {
 			return ""
 		}
 
-		// 对引用链升级卡片，立即同步返回禁用状态，防止飞书 3 秒后恢复按钮可点击
+		// 立即同步返回禁用状态，防止飞书 3 秒后恢复按钮可点击
+		// form_submit 类按钮如果 callback 不立即返回新卡片，飞书会恢复原卡片样式
 		var immediateCard string
 		switch action.Action {
 		case "upgrade_group":
@@ -135,12 +136,50 @@ func main() {
 			}); err == nil {
 				immediateCard = string(b)
 			}
+		case "confirm_session":
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.SessionConfirmCardDone(true),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		case "deny_session":
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.SessionConfirmCardDone(false),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		case "select_cwd":
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.CwdSelectionCardDone("processing"),
+			}); err == nil {
+				immediateCard = string(b)
+			}
 		}
 
-		pendingAction.Resolve(requestID, feishu.ActionResult{
-			Action: action.Action,
-			Value:  action.Value,
+		ok := pendingAction.Resolve(requestID, feishu.ActionResult{
+			Action:    action.Action,
+			Value:     action.Value,
+			FormValue: action.FormValue,
 		})
+		if !ok && immediateCard == "" {
+			// 卡片已过期（服务重启后旧卡片），返回提示
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": map[string]interface{}{
+					"header": map[string]interface{}{
+						"title":    map[string]string{"tag": "plain_text", "content": "⌛ 操作已过期"},
+						"template": "grey",
+					},
+					"elements": []interface{}{
+						map[string]interface{}{
+							"tag":     "markdown",
+							"content": "服务已重启，此卡片已失效，请重新发送消息。",
+						},
+					},
+				},
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		}
 		return immediateCard
 	})
 

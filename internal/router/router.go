@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -58,27 +59,30 @@ func (r *Router) HandleRouterMessage(ctx context.Context, msg feishu.IncomingMes
 
 	activeSessions := r.store.ListActive()
 	result, err := r.classifier.Classify(ctx, msg.Text, activeSessions)
+	isDirect := false
 	if err != nil {
 		log.Printf("[router] classify error: %v", err)
-		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("⚠️ 意图分类失败（已切换直接对话）: %v", err))
-		r.handleDirect(ctx, msg)
+		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("⚠️ 意图分类失败: %v", err))
+		return
 	} else {
 		log.Printf("[router] classified: intent=%s, topic=%s, action=%s", result.Intent, result.Topic, result.SystemAction)
 		switch result.Intent {
 		case intent.IntentDirect:
+			isDirect = true
 			r.handleDirect(ctx, msg)
 		case intent.IntentSession:
 			r.handleSession(ctx, msg, result)
 		case intent.IntentSystem:
 			r.handleSystem(ctx, msg, result)
 		default:
+			isDirect = true
 			log.Printf("[router] unknown intent: %s, treating as direct", result.Intent)
 			r.handleDirect(ctx, msg)
 		}
 	}
 
-	// 本条消息已回复，现在发送升级群聊卡片
-	if upgradeDepth > 0 {
+	// 升级群聊卡片仅在直接回复后发送；session/system 有自己的建群流程，不需要
+	if upgradeDepth > 0 && isDirect {
 		go r.sendChainUpgradeCard(ctx, msg, upgradeDepth)
 	}
 }
@@ -136,10 +140,15 @@ func (r *Router) sendChainUpgradeCard(ctx context.Context, msg feishu.IncomingMe
 		switch action.Action {
 		case "upgrade_group":
 			// 立即禁用按钮，告知正在处理
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgrading", depth))
-			r.handleChainUpgrade(ctx, msg)
+			if err := r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgrading", depth)); err != nil {
+				log.Printf("[chain] update card to upgrading error: %v", err)
+			}
+			cwd := r.selectCwdForUpgrade(ctx, msg)
+			r.handleChainUpgradeWithCwd(ctx, msg, cwd)
 			// 升级完成后更新卡片状态
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgraded", depth))
+			if err := r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgraded", depth)); err != nil {
+				log.Printf("[chain] update card to upgraded error: %v", err)
+			}
 		case "dismiss_upgrade":
 			r.chainTracker.Dismiss(msg.SenderID)
 			// 卡片已在 OnCardAction 回调里同步禁用，无需再次 UpdateCard
@@ -176,8 +185,30 @@ func (r *Router) buildChainFromAPI(ctx context.Context, startMsgID string) []str
 	return chain
 }
 
-// handleChainUpgrade 执行升级流程：建群、合并转发历史、注入 Claude 上下文
-func (r *Router) handleChainUpgrade(ctx context.Context, msg feishu.IncomingMessage) {
+// selectCwdForUpgrade 在 chain upgrade 前弹出工作目录选择卡片。
+// 选择超时时返回默认目录。
+func (r *Router) selectCwdForUpgrade(ctx context.Context, msg feishu.IncomingMessage) string {
+	requestID := uuid.New().String()
+	card := feishu.CwdSelectionCard(r.cfg.Repos, r.cfg.DefaultCwd, requestID)
+	if _, err := r.feishuCli.SendCard(ctx, msg.ChatID, card); err != nil {
+		log.Printf("[chain] send cwd card error: %v", err)
+		return r.cfg.DefaultCwd
+	}
+	ch := r.pending.Wait(requestID)
+	select {
+	case action := <-ch:
+		if cwd := extractCwd(action, r.cfg.DefaultCwd); cwd != "" {
+			r.maybeAddRepo(cwd)
+			return cwd
+		}
+	case <-time.After(2 * time.Minute):
+		log.Printf("[chain] cwd selection timeout, using default")
+	}
+	return r.cfg.DefaultCwd
+}
+
+// handleChainUpgradeWithCwd 执行升级流程：建群、合并转发历史、注入 Claude 上下文
+func (r *Router) handleChainUpgradeWithCwd(ctx context.Context, msg feishu.IncomingMessage, cwd string) {
 	chainMsgIDs := r.chainTracker.GetChain(msg.SenderID)
 	if len(chainMsgIDs) == 0 {
 		log.Printf("[chain] upgrade: no chain for sender %s", msg.SenderID)
@@ -234,7 +265,7 @@ func (r *Router) handleChainUpgrade(ctx context.Context, msg feishu.IncomingMess
 
 	// 6. 用历史上下文初始化 Claude session，获取 CLISessionID
 	var cliSessionID string
-	initResult, err := r.adapter.RunOnceWithSession(ctx, contextPrompt, r.cfg.DefaultCwd)
+	initResult, err := r.adapter.RunOnceWithSession(ctx, contextPrompt, cwd)
 	if err != nil {
 		log.Printf("[chain] history injection error: %v", err)
 	} else {
@@ -247,7 +278,7 @@ func (r *Router) handleChainUpgrade(ctx context.Context, msg feishu.IncomingMess
 		ID:           uuid.New().String(),
 		ChatID:       chatID,
 		Name:         groupName,
-		WorkingDir:   r.cfg.DefaultCwd,
+		WorkingDir:   cwd,
 		CLISessionID: cliSessionID,
 		Model:        r.cfg.SessionModel,
 		Status:       session.StatusActive,
@@ -364,45 +395,87 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 	}
 
 	confirmID := uuid.New().String()
-	card := feishu.SessionConfirmCard(topic, reason, confirmID)
-	r.feishuCli.ReplyCard(ctx, msg.MessageID, card)
+	log.Printf("[router] handleSession: sending confirm card, confirm_id=%s", confirmID)
+	card := feishu.SessionConfirmCard(topic, reason, r.cfg.DefaultCwd, confirmID)
+	if _, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card); err != nil {
+		log.Printf("[router] handleSession: ReplyCard error: %v", err)
+		r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("⚠️ 发送卡片失败: %v", err))
+		return
+	}
 
 	ch := r.pending.Wait(confirmID)
 	go func() {
 		select {
 		case action := <-ch:
+			log.Printf("[router] handleSession: got action=%s for confirm_id=%s", action.Action, confirmID)
 			switch action.Action {
 			case "confirm_session":
-				r.startSessionCreation(ctx, msg, result)
+				cwd := strings.TrimSpace(action.FormValue["cwd"])
+				if cwd == "" {
+					cwd = r.cfg.DefaultCwd
+				}
+				r.maybeAddRepo(cwd)
+				r.createSession(ctx, msg, result, cwd)
 			case "deny_session":
 				r.handleDirect(ctx, msg)
 			}
 		case <-time.After(5 * time.Minute):
-			// 超时默认直接回复
-			r.handleDirect(ctx, msg)
+			log.Printf("[router] handleSession: confirm timeout for msg %s", msg.MessageID)
 		}
 	}()
 }
 
 func (r *Router) startSessionCreation(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
+	log.Printf("[router] startSessionCreation: topic=%s repos=%d", result.Topic, len(r.cfg.Repos))
 	requestID := uuid.New().String()
-
 	card := feishu.CwdSelectionCard(r.cfg.Repos, r.cfg.DefaultCwd, requestID)
-	r.feishuCli.SendCard(ctx, msg.ChatID, card)
+	if _, err := r.feishuCli.SendCard(ctx, msg.ChatID, card); err != nil {
+		log.Printf("[router] send cwd card error: %v", err)
+		r.createSession(ctx, msg, result, r.cfg.DefaultCwd)
+		return
+	}
 
 	ch := r.pending.Wait(requestID)
 	go func() {
 		select {
 		case action := <-ch:
-			cwd := action.Value["cwd"]
-			if cwd == "" {
-				cwd = r.cfg.DefaultCwd
-			}
-			r.createSession(ctx, msg, result, cwd)
+			r.createSession(ctx, msg, result, extractCwd(action, r.cfg.DefaultCwd))
 		case <-time.After(5 * time.Minute):
 			r.feishuCli.SendText(ctx, msg.ChatID, "选择超时，请重新发送")
 		}
 	}()
+}
+
+// maybeAddRepo 如果 cwd 是手动输入的新路径（不在配置 Repos 里且目录存在），则自动加入配置。
+func (r *Router) maybeAddRepo(cwd string) {
+	if cwd == "" {
+		return
+	}
+	info, err := os.Stat(cwd)
+	if err != nil || !info.IsDir() {
+		log.Printf("[router] maybeAddRepo: path not a valid dir, skip: %s", cwd)
+		return
+	}
+	added, err := r.cfg.AddRepo(cwd)
+	if err != nil {
+		log.Printf("[router] maybeAddRepo: save config error: %v", err)
+		return
+	}
+	if added {
+		log.Printf("[router] maybeAddRepo: added %s to repos", cwd)
+	}
+}
+
+// extractCwd 从卡片回调中提取工作目录：
+// 优先读 Value["cwd"]（预设按钮），其次读 FormValue["custom_cwd"]（手动输入），最后返回默认值。
+func extractCwd(action feishu.ActionResult, defaultCwd string) string {
+	if cwd := action.Value["cwd"]; cwd != "" {
+		return cwd
+	}
+	if cwd := strings.TrimSpace(action.FormValue["custom_cwd"]); cwd != "" {
+		return cwd
+	}
+	return defaultCwd
 }
 
 func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd string) {
@@ -412,18 +485,24 @@ func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, 
 	}
 	groupName := fmt.Sprintf("[Claude] %s", name)
 
+	log.Printf("[session] createSession start: topic=%s cwd=%s", name, cwd)
+	log.Printf("[session] calling CreateGroup: name=%s", groupName)
 	chatID, err := r.feishuCli.CreateGroup(ctx, groupName)
 	if err != nil {
+		log.Printf("[session] CreateGroup error: %v", err)
 		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("创建群失败: %v", err))
 		return
 	}
+	log.Printf("[session] CreateGroup success: chat_id=%s", chatID)
 
 	if err := r.feishuCli.AddMember(ctx, chatID, msg.SenderID); err != nil {
 		log.Printf("add member error: %v", err)
 	}
+	log.Printf("[session] AddMember done")
 	if err := r.feishuCli.TransferOwner(ctx, chatID, msg.SenderID); err != nil {
 		log.Printf("[session] transfer owner error: %v", err)
 	}
+	log.Printf("[session] TransferOwner done")
 
 	sess := &session.Session{
 		ID:           uuid.New().String(),
@@ -464,6 +543,8 @@ func (r *Router) handleSystem(ctx context.Context, msg feishu.IncomingMessage, r
 		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("系统状态：\n活跃会话: %d\n默认目录: %s", len(sessions), r.cfg.DefaultCwd))
 
 	default:
-		r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("系统操作 %s 暂未实现", result.SystemAction))
+		// 分类器误判为 system（如 create_session）时，降级为直接回复
+		log.Printf("[router] unknown system_action=%s, falling back to direct", result.SystemAction)
+		r.handleDirect(ctx, msg)
 	}
 }

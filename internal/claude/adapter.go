@@ -132,6 +132,7 @@ func (a *Adapter) Run(ctx context.Context, opts RunOptions, handler EventHandler
 	args := []string{
 		"--output-format", "stream-json",
 		"--verbose",
+		"--dangerously-skip-permissions",
 	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)

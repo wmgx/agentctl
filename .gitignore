@@ -1,6 +1,7 @@
 # Binaries
 /server
 /agentctl
+agentctl-server
 *.exe
 *.out
 
