@@ -142,7 +142,7 @@ func (r *Router) sendChainUpgradeCard(ctx context.Context, msg feishu.IncomingMe
 			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("upgraded", depth))
 		case "dismiss_upgrade":
 			r.chainTracker.Dismiss(msg.SenderID)
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.ChainUpgradeCardDone("dismissed", depth))
+			// 卡片已在 OnCardAction 回调里同步禁用，无需再次 UpdateCard
 		default:
 			log.Printf("[chain] unknown action: %s", action.Action)
 		}

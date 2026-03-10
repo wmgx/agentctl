@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -112,11 +113,33 @@ func main() {
 			log.Printf("[main] card action missing request_id: %+v", action)
 			return ""
 		}
+
+		// 对引用链升级卡片，立即同步返回禁用状态，防止飞书 3 秒后恢复按钮可点击
+		var immediateCard string
+		switch action.Action {
+		case "upgrade_group":
+			depth := 0
+			fmt.Sscanf(action.Value["depth"], "%d", &depth)
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.ChainUpgradeCardDone("upgrading", depth),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		case "dismiss_upgrade":
+			depth := 0
+			fmt.Sscanf(action.Value["depth"], "%d", &depth)
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.ChainUpgradeCardDone("dismissed", depth),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		}
+
 		pendingAction.Resolve(requestID, feishu.ActionResult{
 			Action: action.Action,
 			Value:  action.Value,
 		})
-		return ""
+		return immediateCard
 	})
 
 	eventListener.OnMessage(func(_ context.Context, msg feishu.IncomingMessage) {

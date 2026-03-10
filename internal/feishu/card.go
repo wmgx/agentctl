@@ -205,6 +205,7 @@ func ChainUpgradeCard(depth int, requestID string) map[string]interface{} {
 						"value": map[string]string{
 							"action":     "upgrade_group",
 							"request_id": requestID,
+							"depth":      fmt.Sprintf("%d", depth),
 						},
 					},
 					map[string]interface{}{
@@ -214,6 +215,7 @@ func ChainUpgradeCard(depth int, requestID string) map[string]interface{} {
 						"value": map[string]string{
 							"action":     "dismiss_upgrade",
 							"request_id": requestID,
+							"depth":      fmt.Sprintf("%d", depth),
 						},
 					},
 				},
