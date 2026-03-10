@@ -136,7 +136,7 @@ func main() {
 			}); err == nil {
 				immediateCard = string(b)
 			}
-		case "confirm_session":
+		case "confirm_session_with_cwd":
 			if b, err := json.Marshal(map[string]interface{}{
 				"card": feishu.SessionConfirmCardDone(true),
 			}); err == nil {
@@ -154,6 +154,18 @@ func main() {
 			}); err == nil {
 				immediateCard = string(b)
 			}
+		case "choose_option":
+			chosen := action.Value["chosen"]
+			if chosen == "" {
+				chosen = action.FormValue["custom_answer"]
+			}
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.QuestionCardDone(chosen),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		case "stop_stream":
+			// 不返回新卡片，由后台 goroutine UpdateCard 处理
 		}
 
 		ok := pendingAction.Resolve(requestID, feishu.ActionResult{
