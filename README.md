@@ -87,11 +87,22 @@ cp config.example.json config.json
 ## Update
 
 ```bash
-agentctl-update   # or re-run install.sh update
-install.sh update
+bash install.sh update
 ```
 
-The update command fetches the latest git tag, rebuilds, and replaces the binary in-place. Your `config.json` is preserved.
+Fetches the latest git tag, rebuilds, replaces the binary, and restarts the service. Your `config.json` is preserved.
+
+## Service Management
+
+`install.sh` automatically registers a system daemon on install:
+
+| Platform | Backend | How to check |
+|----------|---------|--------------|
+| macOS | launchd | `launchctl list \| grep agentctl` |
+| Linux | systemd (user) | `systemctl --user status agentctl` |
+| Windows | ❌ not supported | Use WSL2 instead |
+
+Logs are written to `~/.agentctl/log/`.
 
 ## Running
 
