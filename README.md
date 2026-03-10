@@ -1,5 +1,7 @@
 # agentctl
 
+[中文文档](./README_zh.md)
+
 A Go service that connects AI CLI tools (like Claude Code) to messaging channels and notification pipelines. Currently supports Feishu (Lark) as the IM channel, with plans to expand to other channels and CLI tools.
 
 ## Features
