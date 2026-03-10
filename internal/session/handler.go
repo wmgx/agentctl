@@ -6,8 +6,10 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wmgx/agentctl/internal/claude"
 	"github.com/wmgx/agentctl/internal/config"
 	"github.com/wmgx/agentctl/internal/feishu"
@@ -54,7 +56,28 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	sess.LastActiveAt = time.Now()
 	h.store.Put(sess)
 
-	card := feishu.StreamingCard("正在思考...", false, "")
+	abortID := uuid.New().String()
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	abortCh := h.pending.Wait(abortID)
+
+	var userAborted atomic.Bool
+	go func() {
+		select {
+		case action := <-abortCh:
+			if action.Action == "stop_stream" {
+				userAborted.Store(true)
+				runCancel()
+			}
+		case <-runCtx.Done():
+			// Run 自然结束，清理 pending
+			h.pending.Resolve(abortID, feishu.ActionResult{Action: "cleanup"})
+		}
+	}()
+
+	startTime := time.Now()
+	card := feishu.StreamingCardWithAbort("正在思考...", "", 0, abortID)
 	cardMsgID, err := h.feishuCli.SendCard(ctx, msg.ChatID, card)
 	if err != nil {
 		log.Printf("send card error: %v", err)
@@ -63,11 +86,12 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 
 	var (
 		textBuf    strings.Builder
+		tokenInfo  string
 		lastUpdate time.Time
 		throttle   = time.Second
 	)
 
-	h.adapter.Run(ctx, claude.RunOptions{
+	h.adapter.Run(runCtx, claude.RunOptions{
 		Prompt:          msg.Text,
 		Cwd:             sess.WorkingDir,
 		ResumeSessionID: sess.CLISessionID,
@@ -82,7 +106,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 		case "text":
 			textBuf.WriteString(event.Text)
 			if time.Since(lastUpdate) > throttle {
-				card := feishu.StreamingCard(textBuf.String(), false, "")
+				elapsed := int(time.Since(startTime).Seconds())
+				card := feishu.StreamingCardWithAbort(textBuf.String(), "", elapsed, abortID)
 				h.feishuCli.UpdateCard(ctx, cardMsgID, card)
 				lastUpdate = time.Now()
 			}
@@ -101,19 +126,23 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 			textBuf.WriteString(fmt.Sprintf("```\n%s\n```\n", resultText))
 
 		case "result":
-			tokenInfo := ""
 			if event.Usage != nil {
 				tokenInfo = fmt.Sprintf("✅ Input: %d | Output: %d | Cost: $%.4f",
 					event.Usage.InputTokens, event.Usage.OutputTokens, event.CostUSD)
 			}
-			finalText := textBuf.String()
-			if finalText == "" {
-				finalText = event.Text
-			}
-			card := feishu.StreamingCard(finalText, true, tokenInfo)
-			h.feishuCli.UpdateCard(ctx, cardMsgID, card)
 		}
 	})
+
+	elapsed := int(time.Since(startTime).Seconds())
+	finalText := textBuf.String()
+
+	if userAborted.Load() {
+		card := feishu.StreamingCardAborted(finalText, tokenInfo, elapsed)
+		h.feishuCli.UpdateCard(ctx, cardMsgID, card)
+	} else {
+		card := feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed)
+		h.feishuCli.UpdateCard(ctx, cardMsgID, card)
+	}
 
 	h.store.Save()
 }

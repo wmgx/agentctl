@@ -1,6 +1,9 @@
 package feishu
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 func StreamingCard(content string, isComplete bool, tokenInfo string) map[string]interface{} {
 	return StreamingCardWithElapsed(content, isComplete, tokenInfo, 0)
@@ -89,69 +92,104 @@ func ApprovalCard(toolName, toolInput, requestID string) map[string]interface{} 
 	}
 }
 
-// SessionConfirmCard 展示意图分析结果，让用户确认是否建立群聊会话，并输入工作目录
-func SessionConfirmCard(topic, reason, defaultCwd, requestID string) map[string]interface{} {
+// SessionConfirmCard 展示意图分析结果，让用户确认是否建立群聊会话，同时选择工作目录
+func SessionConfirmCard(topic, reason string, repos map[string]string, defaultCwd, requestID string) map[string]interface{} {
 	body := fmt.Sprintf("**主题**：%s\n\n**分析**：%s", topic, reason)
+
+	var elements []interface{}
+
+	// 主题/分析文本
+	elements = append(elements, map[string]interface{}{
+		"tag":     "markdown",
+		"content": body,
+	})
+	elements = append(elements, map[string]interface{}{"tag": "hr"})
+
+	// 预设目录快捷按钮（有配置才显示）
+	if len(repos) > 0 {
+		elements = append(elements, map[string]interface{}{
+			"tag":     "markdown",
+			"content": "**快速选择预设目录：**",
+		})
+		repoKeys := make([]string, 0, len(repos))
+		for name := range repos {
+			repoKeys = append(repoKeys, name)
+		}
+		sort.Strings(repoKeys)
+		var quickActions []interface{}
+		for _, name := range repoKeys {
+			path := repos[name]
+			quickActions = append(quickActions, map[string]interface{}{
+				"tag":  "button",
+				"text": map[string]string{"tag": "plain_text", "content": name},
+				"type": "default",
+				"value": map[string]string{
+					"action":     "confirm_session_with_cwd",
+					"cwd":        path,
+					"request_id": requestID,
+				},
+			})
+		}
+		elements = append(elements, map[string]interface{}{
+			"tag":     "action",
+			"actions": quickActions,
+		})
+		elements = append(elements, map[string]interface{}{"tag": "hr"})
+	}
+
+	// form：手动输入路径 + 建立群聊按钮（form_submit）
 	placeholder := defaultCwd
 	if placeholder == "" {
-		placeholder = "请输入工作目录绝对路径"
+		placeholder = "请输入工作目录绝对路径（留空使用默认）"
 	}
+	elements = append(elements, map[string]interface{}{
+		"tag":  "form",
+		"name": "session_form",
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":        "input",
+				"name":       "custom_cwd",
+				"max_length": 500,
+				"placeholder": map[string]string{
+					"tag":     "plain_text",
+					"content": placeholder,
+				},
+			},
+			map[string]interface{}{
+				"tag":         "button",
+				"action_type": "form_submit",
+				"text":        map[string]string{"tag": "plain_text", "content": "✅ 建立群聊会话"},
+				"type":        "primary",
+				"value": map[string]string{
+					"action":     "confirm_session_with_cwd",
+					"request_id": requestID,
+				},
+			},
+		},
+	})
+
+	// 直接回复按钮（不在 form 内，避免被 form_submit 影响）
+	elements = append(elements, map[string]interface{}{
+		"tag": "action",
+		"actions": []interface{}{
+			map[string]interface{}{
+				"tag":  "button",
+				"text": map[string]string{"tag": "plain_text", "content": "💬 直接回复就好"},
+				"type": "default",
+				"value": map[string]string{
+					"action":     "deny_session",
+					"request_id": requestID,
+				},
+			},
+		},
+	})
+
 	return map[string]interface{}{
 		"header": map[string]interface{}{
 			"title":    map[string]string{"tag": "plain_text", "content": "🤔 需要建立独立会话吗？"},
 			"template": "blue",
 		},
-		"elements": []interface{}{
-			map[string]interface{}{
-				"tag":     "markdown",
-				"content": body,
-			},
-			map[string]interface{}{"tag": "hr"},
-			map[string]interface{}{
-				"tag":  "form",
-				"name": "session_form",
-				"elements": []interface{}{
-					map[string]interface{}{
-						"tag":  "input",
-						"name": "cwd",
-						"label": map[string]string{
-							"tag":     "plain_text",
-							"content": "工作目录",
-						},
-						"label_position": "left",
-						"placeholder": map[string]string{
-							"tag":     "plain_text",
-							"content": placeholder,
-						},
-					},
-					map[string]interface{}{
-						"tag":         "button",
-						"name":        "submit_btn",
-						"action_type": "form_submit",
-						"text":        map[string]string{"tag": "plain_text", "content": "✅ 建立群聊会话"},
-						"type":        "primary",
-						"value": map[string]string{
-							"action":     "confirm_session",
-							"request_id": requestID,
-						},
-					},
-				},
-			},
-			map[string]interface{}{
-				"tag": "action",
-				"actions": []interface{}{
-					map[string]interface{}{
-						"tag":  "button",
-						"text": map[string]string{"tag": "plain_text", "content": "💬 直接回复就好"},
-						"type": "default",
-						"value": map[string]string{
-							"action":     "deny_session",
-							"request_id": requestID,
-						},
-					},
-				},
-			},
-		},
+		"elements": elements,
 	}
 }
 
@@ -384,6 +422,86 @@ func SessionConfirmCardDone(confirmed bool) map[string]interface{} {
 	}
 }
 
+// QuestionCard 生成交互式问题选择卡片。
+// options 中的每一项作为独立按钮；has_custom=true 时底部附加文本输入框。
+func QuestionCard(title string, options []string, hasCustom bool, requestID string) map[string]interface{} {
+	var elements []interface{}
+
+	// 选项按钮行（每行最多3个）
+	var actions []interface{}
+	for _, opt := range options {
+		actions = append(actions, map[string]interface{}{
+			"tag":  "button",
+			"text": map[string]string{"tag": "plain_text", "content": opt},
+			"type": "default",
+			"value": map[string]string{
+				"action":     "choose_option",
+				"chosen":     opt,
+				"request_id": requestID,
+			},
+		})
+	}
+	if len(actions) > 0 {
+		elements = append(elements, map[string]interface{}{
+			"tag":     "action",
+			"actions": actions,
+		})
+	}
+
+	// 自定义输入框
+	if hasCustom {
+		elements = append(elements, map[string]interface{}{"tag": "hr"})
+		elements = append(elements, map[string]interface{}{
+			"tag":  "form",
+			"name": "question_form",
+			"elements": []interface{}{
+				map[string]interface{}{
+					"tag":  "input",
+					"name": "custom_answer",
+					"placeholder": map[string]string{
+						"tag":     "plain_text",
+						"content": "或输入自定义回答...",
+					},
+				},
+				map[string]interface{}{
+					"tag":         "button",
+					"action_type": "form_submit",
+					"text":        map[string]string{"tag": "plain_text", "content": "✅ 发送"},
+					"type":        "primary",
+					"value": map[string]string{
+						"action":     "choose_option",
+						"request_id": requestID,
+					},
+				},
+			},
+		})
+	}
+
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": title},
+			"template": "blue",
+		},
+		"elements": elements,
+	}
+}
+
+// QuestionCardDone 生成问题卡片的已回答状态（禁用所有交互）
+func QuestionCardDone(chosen string) map[string]interface{} {
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": "✅ 已回答"},
+			"template": "green",
+		},
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":     "markdown",
+				"content": fmt.Sprintf("**你的选择：** %s", chosen),
+			},
+		},
+	}
+}
+
 func ConfirmCard(title, description, requestID string) map[string]interface{} {
 	return map[string]interface{}{
 		"header": map[string]interface{}{
@@ -419,5 +537,93 @@ func ConfirmCard(title, description, requestID string) map[string]interface{} {
 				},
 			},
 		},
+	}
+}
+
+// StreamingCardWithAbort 生成流式回复卡片（进行中），底部附加停止按钮。
+// abortID 是停止按钮的 request_id，用于 PendingAction 匹配。
+func StreamingCardWithAbort(content, tokenInfo string, elapsedSec int, abortID string) map[string]interface{} {
+	headerTitle := "Claude 回复中..."
+	if elapsedSec > 0 {
+		headerTitle = fmt.Sprintf("Claude 回复中...（已用 %ds）", elapsedSec)
+	}
+
+	elements := []interface{}{
+		map[string]interface{}{
+			"tag":     "markdown",
+			"content": content,
+		},
+	}
+
+	if tokenInfo != "" {
+		elements = append(elements,
+			map[string]interface{}{"tag": "hr"},
+			map[string]interface{}{
+				"tag": "note",
+				"elements": []interface{}{
+					map[string]string{"tag": "plain_text", "content": tokenInfo},
+				},
+			},
+		)
+	}
+
+	// 停止按钮
+	elements = append(elements, map[string]interface{}{
+		"tag": "action",
+		"actions": []interface{}{
+			map[string]interface{}{
+				"tag":  "button",
+				"text": map[string]string{"tag": "plain_text", "content": "🛑 停止"},
+				"type": "danger",
+				"value": map[string]string{
+					"action":     "stop_stream",
+					"request_id": abortID,
+				},
+			},
+		},
+	})
+
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": headerTitle},
+			"template": "blue",
+		},
+		"elements": elements,
+	}
+}
+
+// StreamingCardAborted 生成流式回复卡片的已中断状态。
+// 保留已输出内容，header 标记为"已中断"。
+func StreamingCardAborted(content, tokenInfo string, elapsedSec int) map[string]interface{} {
+	headerTitle := "⛔ 已中断"
+	if elapsedSec > 0 {
+		headerTitle = fmt.Sprintf("⛔ 已中断（用时 %ds）", elapsedSec)
+	}
+
+	elements := []interface{}{
+		map[string]interface{}{
+			"tag":     "markdown",
+			"content": content,
+		},
+	}
+
+	if tokenInfo != "" {
+		elements = append(elements,
+			map[string]interface{}{"tag": "hr"},
+			map[string]interface{}{
+				"tag": "note",
+				"elements": []interface{}{
+					map[string]string{"tag": "plain_text", "content": tokenInfo + "（已中断）"},
+				},
+			},
+		)
+	}
+
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": headerTitle},
+			"template": "orange",
+		},
+		"elements": elements,
 	}
 }

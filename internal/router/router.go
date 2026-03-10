@@ -2,10 +2,13 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +22,79 @@ import (
 
 const streamThrottle = time.Second
 
+// filterCodeBlocks 过滤文本中的代码块，用简短提示替代
+// 当 compact=true 时，将 ```...``` 代码块替换为 [...代码已省略]
+func filterCodeBlocks(text string, compact bool) string {
+	if !compact {
+		return text
+	}
+
+	var result strings.Builder
+	inCodeBlock := false
+	codeBlockCount := 0
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		// 检测代码块开始/结束标记
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inCodeBlock = !inCodeBlock
+			if inCodeBlock {
+				codeBlockCount++
+				result.WriteString("\n[代码块 #")
+				result.WriteString(fmt.Sprintf("%d", codeBlockCount))
+				result.WriteString(" 已省略]\n")
+			}
+			continue
+		}
+
+		// 代码块内部跳过
+		if inCodeBlock {
+			continue
+		}
+
+		result.WriteString(line)
+		result.WriteString("\n")
+	}
+
+	return strings.TrimRight(result.String(), "\n")
+}
+
+
+// questionMark 是 Claude 输出的问题卡片标记格式
+// 格式：<!--QUESTION:{"title":"...","options":["A","B"],"has_custom":true}-->
+var questionMarkRe = regexp.MustCompile(`<!--QUESTION:(\{.*?\})-->`)
+
+type questionData struct {
+	Title     string   `json:"title"`
+	Options   []string `json:"options"`
+	HasCustom bool     `json:"has_custom"`
+}
+
+// extractQuestion 从文本中提取 QUESTION 标记，返回解析后的数据。
+// 如果文本中没有标记，返回 nil。
+func extractQuestion(text string) *questionData {
+	m := questionMarkRe.FindStringSubmatch(text)
+	if m == nil {
+		return nil
+	}
+	var q questionData
+	if err := json.Unmarshal([]byte(m[1]), &q); err != nil {
+		log.Printf("[question] parse error: %v, raw: %s", err, m[1])
+		return nil
+	}
+	return &q
+}
+
+// removeQuestionMark 从文本中移除 QUESTION 标记，返回干净的文本。
+func removeQuestionMark(text string) string {
+	return strings.TrimSpace(questionMarkRe.ReplaceAllString(text, ""))
+}
+
+// questionSystemHint 附加到系统提示，告知 Claude 何时输出问题标记。
+const questionSystemHint = `当你需要向用户提问以获取选择时（例如让用户选择方案），在回复末尾附加以下格式的标记（不要有其他内容在标记之后）：
+<!--QUESTION:{"title":"问题标题","options":["选项A","选项B","选项C"],"has_custom":true}-->
+has_custom 为 true 时用户可以自定义输入回答，为 false 时只能从 options 中选择。
+除非需要用户做选择，否则不要输出此标记。`
 
 type Router struct {
 	cfg          *config.Config
@@ -325,41 +401,129 @@ func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
 		return
 	}
 
-	var (
-		textBuf    strings.Builder
-		lastUpdate time.Time
-		startTime  = time.Now()
-	)
+	// 支持问题卡片交互的对话循环
+	// 每轮：调用 Claude → 检测是否有问题标记 → 有则发卡片等待用户回答 → 继续循环
+	var resumeSessionID string
+	startTime := time.Now()
 
-	r.adapter.Run(ctx, claude.RunOptions{
-		Prompt: prompt,
-	}, func(event claude.Event) {
-		switch event.Type {
-		case "text":
-			textBuf.WriteString(event.Text)
-			elapsed := int(time.Since(startTime).Seconds())
-			if time.Since(lastUpdate) > streamThrottle {
-				r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(textBuf.String(), false, "", elapsed))
-				lastUpdate = time.Now()
-			}
+dialogLoop:
+	for {
+		// 每轮独立的 abort 控制
+		abortID := uuid.New().String()
+		runCtx, runCancel := context.WithCancel(ctx)
 
-		case "result":
-			tokenInfo := ""
-			if event.Usage != nil {
-				tokenInfo = fmt.Sprintf("✅ Input: %d | Output: %d | Cost: $%.4f",
-					event.Usage.InputTokens, event.Usage.OutputTokens, event.CostUSD)
+		abortCh := r.pending.Wait(abortID)
+		var userAborted atomic.Bool
+		go func(id string, cancel context.CancelFunc) {
+			select {
+			case action := <-abortCh:
+				if action.Action == "stop_stream" {
+					userAborted.Store(true)
+					cancel()
+				}
+			case <-runCtx.Done():
+				r.pending.Resolve(id, feishu.ActionResult{Action: "cleanup"})
 			}
-			finalText := textBuf.String()
-			if finalText == "" {
-				finalText = event.Text
+		}(abortID, runCancel)
+
+		// 更新卡片为带停止按钮的进行中状态
+		elapsed := int(time.Since(startTime).Seconds())
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID))
+
+		var (
+			textBuf    strings.Builder
+			tokenInfo  string
+			lastUpdate time.Time
+		)
+
+		r.adapter.Run(runCtx, claude.RunOptions{
+			Prompt:             prompt,
+			ResumeSessionID:    resumeSessionID,
+			AppendSystemPrompt: questionSystemHint,
+		}, func(event claude.Event) {
+			switch event.Type {
+			case "session_init":
+				if resumeSessionID == "" {
+					resumeSessionID = event.SessionID
+				}
+			case "text":
+				textBuf.WriteString(event.Text)
+				elapsed := int(time.Since(startTime).Seconds())
+				if time.Since(lastUpdate) > streamThrottle {
+					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
+					r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+					lastUpdate = time.Now()
+				}
+			case "result":
+				if event.Usage != nil {
+					tokenInfo = fmt.Sprintf("✅ Input: %d | Output: %d | Cost: $%.4f",
+						event.Usage.InputTokens, event.Usage.OutputTokens, event.CostUSD)
+				}
+				if resumeSessionID == "" && event.SessionID != "" {
+					resumeSessionID = event.SessionID
+				}
 			}
-			if finalText == "" {
-				finalText = "（无输出）"
+		})
+
+		runCancel() // 确保 goroutine 退出
+
+		elapsed = int(time.Since(startTime).Seconds())
+		rawText := textBuf.String()
+
+		// 用户中断：显示中断卡片，退出循环
+		if userAborted.Load() {
+			cleanText := removeQuestionMark(rawText)
+			if cleanText == "" {
+				cleanText = "（已中断）"
 			}
-			elapsed := int(time.Since(startTime).Seconds())
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed))
+			break dialogLoop
 		}
-	})
+
+		question := extractQuestion(rawText)
+		cleanText := removeQuestionMark(rawText)
+		if cleanText == "" {
+			cleanText = "（无输出）"
+		}
+
+		if question == nil {
+			// 普通回复，更新卡片并结束
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+			break dialogLoop
+		}
+
+		// 有问题标记：更新卡片显示回复文本（已完成），再单独发问题选择卡片
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+
+		requestID := uuid.New().String()
+		questionCard := feishu.QuestionCard(question.Title, question.Options, question.HasCustom, requestID)
+		if _, err := r.feishuCli.SendCard(ctx, msg.ChatID, questionCard); err != nil {
+			log.Printf("[router] send question card error: %v", err)
+			break dialogLoop
+		}
+		log.Printf("[router] question card sent, waiting for answer: %s", question.Title)
+
+		ch := r.pending.Wait(requestID)
+		select {
+		case action := <-ch:
+			chosen := action.Value["chosen"]
+			if chosen == "" {
+				chosen = strings.TrimSpace(action.FormValue["custom_answer"])
+			}
+			if chosen == "" {
+				break dialogLoop
+			}
+			log.Printf("[router] user answered: %s", chosen)
+			prompt = chosen
+		case <-time.After(10 * time.Minute):
+			log.Printf("[router] question card timeout for sender %s", msg.SenderID)
+			break dialogLoop
+		}
+
+		// 为新一轮回复新建一个卡片
+		newCard := feishu.StreamingCard("正在思考...", false, "")
+		cardMsgID, _ = r.feishuCli.SendCard(ctx, msg.ChatID, newCard)
+	}
 }
 
 // fetchChainLines 获取链上所有历史消息（不含当前消息），格式化为 [角色]: 文本 的列表
@@ -384,7 +548,6 @@ func (r *Router) fetchChainLines(ctx context.Context, senderID, currentMsgID str
 }
 
 func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
-	// 先展示分析结果，让用户确认是否要建立群聊
 	topic := result.Topic
 	if topic == "" {
 		topic = "未识别主题"
@@ -396,7 +559,7 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 
 	confirmID := uuid.New().String()
 	log.Printf("[router] handleSession: sending confirm card, confirm_id=%s", confirmID)
-	card := feishu.SessionConfirmCard(topic, reason, r.cfg.DefaultCwd, confirmID)
+	card := feishu.SessionConfirmCard(topic, reason, r.cfg.Repos, r.cfg.DefaultCwd, confirmID)
 	if _, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card); err != nil {
 		log.Printf("[router] handleSession: ReplyCard error: %v", err)
 		r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("⚠️ 发送卡片失败: %v", err))
@@ -409,39 +572,17 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 		case action := <-ch:
 			log.Printf("[router] handleSession: got action=%s for confirm_id=%s", action.Action, confirmID)
 			switch action.Action {
-			case "confirm_session":
-				cwd := strings.TrimSpace(action.FormValue["cwd"])
-				if cwd == "" {
-					cwd = r.cfg.DefaultCwd
-				}
+			case "confirm_session_with_cwd":
+				cwd := extractCwd(action, r.cfg.DefaultCwd)
 				r.maybeAddRepo(cwd)
 				r.createSession(ctx, msg, result, cwd)
 			case "deny_session":
 				r.handleDirect(ctx, msg)
+			default:
+				log.Printf("[router] handleSession: unknown action=%s", action.Action)
 			}
 		case <-time.After(5 * time.Minute):
 			log.Printf("[router] handleSession: confirm timeout for msg %s", msg.MessageID)
-		}
-	}()
-}
-
-func (r *Router) startSessionCreation(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
-	log.Printf("[router] startSessionCreation: topic=%s repos=%d", result.Topic, len(r.cfg.Repos))
-	requestID := uuid.New().String()
-	card := feishu.CwdSelectionCard(r.cfg.Repos, r.cfg.DefaultCwd, requestID)
-	if _, err := r.feishuCli.SendCard(ctx, msg.ChatID, card); err != nil {
-		log.Printf("[router] send cwd card error: %v", err)
-		r.createSession(ctx, msg, result, r.cfg.DefaultCwd)
-		return
-	}
-
-	ch := r.pending.Wait(requestID)
-	go func() {
-		select {
-		case action := <-ch:
-			r.createSession(ctx, msg, result, extractCwd(action, r.cfg.DefaultCwd))
-		case <-time.After(5 * time.Minute):
-			r.feishuCli.SendText(ctx, msg.ChatID, "选择超时，请重新发送")
 		}
 	}()
 }
