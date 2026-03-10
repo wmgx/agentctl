@@ -34,6 +34,7 @@ type Config struct {
 	SessionModel           string            `json:"session_model,omitempty"`           // 新 session 默认使用的模型，默认 claude-sonnet-4-5
 	BotOpenID              string            `json:"bot_open_id,omitempty"`             // Bot 自身的 open_id，用于区分历史消息发送者
 	ChainUpgradeThreshold  int               `json:"chain_upgrade_threshold,omitempty"` // P2P 引用链触发升级群聊的轮数，默认 4
+	LogRetentionDays       int               `json:"log_retention_days,omitempty"`      // 日志保留天数，超过后自动删除，默认 7
 }
 
 func DefaultDataDir() string {
@@ -176,6 +177,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.ChainUpgradeThreshold <= 0 {
 		cfg.ChainUpgradeThreshold = 4
+	}
+	if cfg.LogRetentionDays <= 0 {
+		cfg.LogRetentionDays = 7
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err

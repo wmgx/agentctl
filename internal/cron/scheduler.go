@@ -8,6 +8,7 @@ import (
 	"github.com/wmgx/agentctl/internal/claude"
 	"github.com/wmgx/agentctl/internal/config"
 	"github.com/wmgx/agentctl/internal/feishu"
+	"github.com/wmgx/agentctl/internal/logclean"
 
 	cronlib "github.com/robfig/cron/v3"
 )
@@ -19,9 +20,10 @@ type Scheduler struct {
 	adapter   *claude.Adapter
 	feishuCli *feishu.Client
 	entryMap  map[string]cronlib.EntryID
+	logDir    string
 }
 
-func NewScheduler(store *Store, cfg *config.Config, adapter *claude.Adapter, feishuCli *feishu.Client) *Scheduler {
+func NewScheduler(store *Store, cfg *config.Config, adapter *claude.Adapter, feishuCli *feishu.Client, logDir string) *Scheduler {
 	return &Scheduler{
 		cron:      cronlib.New(),
 		store:     store,
@@ -29,6 +31,7 @@ func NewScheduler(store *Store, cfg *config.Config, adapter *claude.Adapter, fei
 		adapter:   adapter,
 		feishuCli: feishuCli,
 		entryMap:  make(map[string]cronlib.EntryID),
+		logDir:    logDir,
 	}
 }
 
@@ -36,8 +39,15 @@ func (s *Scheduler) Start() {
 	for _, job := range s.store.ListEnabled() {
 		s.addJob(job)
 	}
+	// 内置日志清理：每天凌晨 3 点执行
+	s.cron.AddFunc("0 3 * * *", func() {
+		logclean.Run(s.logDir, s.cfg.LogRetentionDays)
+	})
+	// 启动时立即执行一次，清理历史遗留的过期日志
+	go logclean.Run(s.logDir, s.cfg.LogRetentionDays)
+
 	s.cron.Start()
-	log.Printf("Cron scheduler started with %d jobs", len(s.entryMap))
+	log.Printf("Cron scheduler started with %d jobs (log retention: %dd)", len(s.entryMap), s.cfg.LogRetentionDays)
 }
 
 func (s *Scheduler) Stop() {

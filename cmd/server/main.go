@@ -96,7 +96,9 @@ func main() {
 	sessHandler := session.NewHandler(cfg, feishuCli, sessionStore, cliAdapter, pendingAction)
 
 	// Cron 调度器
-	cronScheduler := cron.NewScheduler(cronStore, cfg, cliAdapter, feishuCli)
+	logDir := filepath.Join(dataDir, "log")
+	os.MkdirAll(logDir, 0755)
+	cronScheduler := cron.NewScheduler(cronStore, cfg, cliAdapter, feishuCli, logDir)
 	cronScheduler.Start()
 	defer cronScheduler.Stop()
 
