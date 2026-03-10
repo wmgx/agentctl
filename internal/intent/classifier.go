@@ -29,7 +29,11 @@ func NewClassifier(adapter *claude.Adapter, model string, threshold int, promptF
 
 // defaultSystemPromptTpl 内置 prompt 模板，{{threshold}} 会被替换为实际阈值
 const defaultSystemPromptTpl = `你是意图分类器。根据用户消息和现有sessions列表,返回JSON。
-不要输出其他任何内容,只输出纯JSON。
+
+【严格要求】
+- 只输出纯 JSON，不要有任何额外文字、标点或格式符号
+- 不要添加任何前缀或后缀（如"喵～"等）
+- 不要使用 markdown 代码块
 
 判断逻辑——先估算"预期交互轮数"，再决定意图：
 
@@ -99,17 +103,23 @@ func (c *Classifier) Classify(ctx context.Context, userMsg string, activeSession
 	}
 
 	sysPrompt := c.buildSystemPrompt()
-	prompt := fmt.Sprintf("%s\n\n---\n用户消息: %s\n\n%s", sysPrompt, userMsg, sessionsSummary)
+	userPrompt := fmt.Sprintf("用户消息: %s\n\n%s", userMsg, sessionsSummary)
 
 	classifyCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	raw, err := c.adapter.RunOnce(classifyCtx, prompt, "", true)
+	// 使用独立的 system prompt，不受全局 CLAUDE.md 配置影响
+	raw, err := c.adapter.RunOnceWithOptions(classifyCtx, userPrompt, claude.RunOnceOptions{
+		Model:        c.model,
+		NoTools:      true,
+		SystemPrompt: sysPrompt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("classify: %w", err)
 	}
 
 	cleaned := strings.TrimSpace(raw)
+	// 去除 markdown 代码块标记
 	if strings.HasPrefix(cleaned, "```") {
 		if i := strings.Index(cleaned, "\n"); i != -1 {
 			cleaned = cleaned[i+1:]
@@ -117,6 +127,14 @@ func (c *Classifier) Classify(ctx context.Context, userMsg string, activeSession
 		if j := strings.LastIndex(cleaned, "```"); j != -1 {
 			cleaned = strings.TrimSpace(cleaned[:j])
 		}
+	}
+
+	// 提取纯 JSON：从第一个 { 到最后一个 }
+	// 防止 LLM 在 JSON 前后添加额外文本（如全局配置的"喵～"）
+	startIdx := strings.Index(cleaned, "{")
+	endIdx := strings.LastIndex(cleaned, "}")
+	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+		cleaned = cleaned[startIdx : endIdx+1]
 	}
 
 	var result ClassifyResult

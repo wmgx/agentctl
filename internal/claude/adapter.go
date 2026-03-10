@@ -54,9 +54,24 @@ func (a *Adapter) envMap() map[string]string {
 	return env
 }
 
+// RunOnceOptions 是 RunOnce 的可选参数
+type RunOnceOptions struct {
+	Model        string
+	NoTools      bool
+	SystemPrompt string // 如果非空，使用 --system-prompt 覆盖全局配置
+}
+
 // RunOnce executes a prompt via claude CLI and returns the text output.
 // noTools=true disables all tool use (useful for pure text/JSON responses).
 func (a *Adapter) RunOnce(ctx context.Context, prompt, model string, noTools bool) (string, error) {
+	return a.RunOnceWithOptions(ctx, prompt, RunOnceOptions{
+		Model:   model,
+		NoTools: noTools,
+	})
+}
+
+// RunOnceWithOptions 执行一次性 prompt，支持更多配置选项
+func (a *Adapter) RunOnceWithOptions(ctx context.Context, prompt string, opts RunOnceOptions) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -66,11 +81,15 @@ func (a *Adapter) RunOnce(ctx context.Context, prompt, model string, noTools boo
 		"--dangerously-skip-permissions",
 		"--no-session-persistence",
 	}
-	if model != "" {
-		args = append(args, "--model", model)
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
 	}
-	if noTools {
+	if opts.NoTools {
 		args = append(args, "--tools", "")
+	}
+	// 如果提供了 SystemPrompt，使用 --system-prompt 覆盖全局 CLAUDE.md
+	if opts.SystemPrompt != "" {
+		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 
 	result, err := a.tmux.ExecCollect(ctx, a.envMap(), a.CLIPath, prompt, args, "")
