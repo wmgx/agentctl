@@ -105,7 +105,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 
 		case "text":
 			textBuf.WriteString(event.Text)
-			if time.Since(lastUpdate) > throttle {
+			if !userAborted.Load() && time.Since(lastUpdate) > throttle {
 				elapsed := int(time.Since(startTime).Seconds())
 				card := feishu.StreamingCardWithAbort(textBuf.String(), "", elapsed, abortID)
 				h.feishuCli.UpdateCard(ctx, cardMsgID, card)

@@ -449,7 +449,7 @@ dialogLoop:
 			case "text":
 				textBuf.WriteString(event.Text)
 				elapsed := int(time.Since(startTime).Seconds())
-				if time.Since(lastUpdate) > streamThrottle {
+				if !userAborted.Load() && time.Since(lastUpdate) > streamThrottle {
 					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
 					r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
 					lastUpdate = time.Now()
