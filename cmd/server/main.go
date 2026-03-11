@@ -165,7 +165,11 @@ func main() {
 				immediateCard = string(b)
 			}
 		case "stop_stream":
-			// 不返回新卡片，由后台 goroutine UpdateCard 处理
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.StreamingCardAborted("（已中断，正在整理输出...）", "", 0),
+			}); err == nil {
+				immediateCard = string(b)
+			}
 		}
 
 		ok := pendingAction.Resolve(requestID, feishu.ActionResult{
