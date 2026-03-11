@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -434,6 +435,9 @@ dialogLoop:
 			textBuf    strings.Builder
 			tokenInfo  string
 			lastUpdate time.Time
+			// cardMu 序列化所有 UpdateCard 调用，防止流式更新和最终卡片乱序到达飞书
+			cardMu      sync.Mutex
+			cardFinished bool
 		)
 
 		r.adapter.Run(runCtx, claude.RunOptions{
@@ -451,8 +455,12 @@ dialogLoop:
 				elapsed := int(time.Since(startTime).Seconds())
 				if !userAborted.Load() && time.Since(lastUpdate) > streamThrottle {
 					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
-					r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
-					lastUpdate = time.Now()
+					cardMu.Lock()
+					if !cardFinished {
+						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+						lastUpdate = time.Now()
+					}
+					cardMu.Unlock()
 				}
 			case "result":
 				if event.Usage != nil {
@@ -476,7 +484,11 @@ dialogLoop:
 			if cleanText == "" {
 				cleanText = "（已中断）"
 			}
+			// 持锁发送最终卡片，确保它在所有流式更新之后到达飞书
+			cardMu.Lock()
+			cardFinished = true
 			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed))
+			cardMu.Unlock()
 			break dialogLoop
 		}
 
@@ -486,11 +498,16 @@ dialogLoop:
 			cleanText = "（无输出）"
 		}
 
+		// 持锁发送最终卡片
+		cardMu.Lock()
+		cardFinished = true
 		if question == nil {
 			// 普通回复，更新卡片并结束
 			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+			cardMu.Unlock()
 			break dialogLoop
 		}
+		cardMu.Unlock()
 
 		// 有问题标记：更新卡片显示回复文本（已完成），再单独发问题选择卡片
 		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))

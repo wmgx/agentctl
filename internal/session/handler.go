@@ -89,6 +89,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 		tokenInfo  string
 		lastUpdate time.Time
 		throttle   = time.Second
+		// cardMu 序列化所有 UpdateCard 调用，防止流式更新和中断卡片乱序到达飞书
+		cardMu      sync.Mutex
+		cardFinished bool
 	)
 
 	h.adapter.Run(runCtx, claude.RunOptions{
@@ -107,9 +110,12 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 			textBuf.WriteString(event.Text)
 			if !userAborted.Load() && time.Since(lastUpdate) > throttle {
 				elapsed := int(time.Since(startTime).Seconds())
-				card := feishu.StreamingCardWithAbort(textBuf.String(), "", elapsed, abortID)
-				h.feishuCli.UpdateCard(ctx, cardMsgID, card)
-				lastUpdate = time.Now()
+				cardMu.Lock()
+				if !cardFinished {
+					h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(textBuf.String(), "", elapsed, abortID))
+					lastUpdate = time.Now()
+				}
+				cardMu.Unlock()
 			}
 
 		case "tool_use":
@@ -136,13 +142,15 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	elapsed := int(time.Since(startTime).Seconds())
 	finalText := textBuf.String()
 
+	// 持锁发送最终卡片，确保它一定在所有流式更新之后到达飞书
+	cardMu.Lock()
+	cardFinished = true
 	if userAborted.Load() {
-		card := feishu.StreamingCardAborted(finalText, tokenInfo, elapsed)
-		h.feishuCli.UpdateCard(ctx, cardMsgID, card)
+		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(finalText, tokenInfo, elapsed))
 	} else {
-		card := feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed)
-		h.feishuCli.UpdateCard(ctx, cardMsgID, card)
+		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed))
 	}
+	cardMu.Unlock()
 
 	h.store.Save()
 }

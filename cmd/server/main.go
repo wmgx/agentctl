@@ -165,11 +165,8 @@ func main() {
 				immediateCard = string(b)
 			}
 		case "stop_stream":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.StreamingCardAborted("（已中断，正在整理输出...）", "", 0),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			// 不需要立即返回卡片：mutex 保证中断卡片在所有流式更新之后到达飞书
+			// 普通按钮（非 form_submit）不会因为 callback 未返回新卡片而恢复原卡片样式
 		}
 
 		ok := pendingAction.Resolve(requestID, feishu.ActionResult{
