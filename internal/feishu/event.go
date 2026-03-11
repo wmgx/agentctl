@@ -134,18 +134,7 @@ func (el *EventListener) Start(ctx context.Context) error {
 			FormValue: formValue,
 		}
 		log.Printf("[event] card action: open_id=%s, action=%s, request_id=%s", openID, action.Action, strValue["request_id"])
-		resp := el.onCardAction(ctx, action)
-		if resp != "" {
-			var cardResp map[string]interface{}
-			if err := json.Unmarshal([]byte(resp), &cardResp); err == nil {
-				return &callback.CardActionTriggerResponse{
-					Card: &callback.Card{
-						Type: "card_json",
-						Data: cardResp["card"],
-					},
-				}, nil
-			}
-		}
+		el.onCardAction(ctx, action)
 		return nil, nil
 	})
 

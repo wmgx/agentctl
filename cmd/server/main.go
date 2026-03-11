@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -116,74 +115,36 @@ func main() {
 			return ""
 		}
 
-		// 立即同步返回禁用状态，防止飞书 3 秒后恢复按钮可点击
-		// form_submit 类按钮如果 callback 不立即返回新卡片，飞书会恢复原卡片样式
-		var immediateCard string
+		// 确定要显示的卡片（禁用按钮状态）
+		var cardObj map[string]interface{}
 		switch action.Action {
 		case "upgrade_group":
 			depth := 0
 			fmt.Sscanf(action.Value["depth"], "%d", &depth)
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.ChainUpgradeCardDone("upgrading", depth),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.ChainUpgradeCardDone("upgrading", depth)
 		case "dismiss_upgrade":
 			depth := 0
 			fmt.Sscanf(action.Value["depth"], "%d", &depth)
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.ChainUpgradeCardDone("dismissed", depth),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.ChainUpgradeCardDone("dismissed", depth)
 		case "confirm_session_with_cwd":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.SessionConfirmCardDone(true),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.SessionConfirmCardDone(true)
 		case "deny_session":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.SessionConfirmCardDone(false),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.SessionConfirmCardDone(false)
 		case "select_cwd":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.CwdSelectionCardDone("processing"),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.CwdSelectionCardDone("processing")
 		case "choose_option":
 			chosen := action.Value["chosen"]
 			if chosen == "" {
 				chosen = action.FormValue["custom_answer"]
 			}
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.QuestionCardDone(chosen),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.QuestionCardDone(chosen)
 		case "approve":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.ApprovalCardDone(true),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.ApprovalCardDone(true)
 		case "deny":
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.ApprovalCardDone(false),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			cardObj = feishu.ApprovalCardDone(false)
 		case "stop_stream":
-			// 立即返回禁用状态，防止用户重复点击停止按钮
-			// 最终卡片（StreamingCardAborted）通过 mutex 序列化的 UpdateCard 到达飞书，替换此占位卡片
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": feishu.StreamingCardStopping(),
-			}); err == nil {
-				immediateCard = string(b)
-			}
+			// 显示"正在停止"占位卡片，最终卡片（StreamingCardAborted）由 handler 的 mutex 序列化 UpdateCard 替换
+			cardObj = feishu.StreamingCardStopping()
 		}
 
 		ok := pendingAction.Resolve(requestID, feishu.ActionResult{
@@ -191,26 +152,27 @@ func main() {
 			Value:     action.Value,
 			FormValue: action.FormValue,
 		})
-		if !ok && immediateCard == "" {
-			// 卡片已过期（服务重启后旧卡片），返回提示
-			if b, err := json.Marshal(map[string]interface{}{
-				"card": map[string]interface{}{
-					"header": map[string]interface{}{
-						"title":    map[string]string{"tag": "plain_text", "content": "⌛ 操作已过期"},
-						"template": "grey",
-					},
-					"elements": []interface{}{
-						map[string]interface{}{
-							"tag":     "markdown",
-							"content": "服务已重启，此卡片已失效，请重新发送消息。",
-						},
+		if !ok && cardObj == nil {
+			// 卡片已过期（服务重启后旧卡片），显示提示
+			cardObj = map[string]interface{}{
+				"header": map[string]interface{}{
+					"title":    map[string]string{"tag": "plain_text", "content": "⌛ 操作已过期"},
+					"template": "grey",
+				},
+				"elements": []interface{}{
+					map[string]interface{}{
+						"tag":     "markdown",
+						"content": "服务已重启，此卡片已失效，请重新发送消息。",
 					},
 				},
-			}); err == nil {
-				immediateCard = string(b)
 			}
 		}
-		return immediateCard
+
+		// 通过 UpdateCard API 更新卡片，避免 card.action.trigger 回调响应体格式问题（飞书错误 200672）
+		if cardObj != nil && action.MessageID != "" {
+			feishuCli.UpdateCard(appCtx, action.MessageID, cardObj)
+		}
+		return ""
 	})
 
 	eventListener.OnMessage(func(_ context.Context, msg feishu.IncomingMessage) {
