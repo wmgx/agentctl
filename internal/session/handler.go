@@ -110,9 +110,10 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 			textBuf.WriteString(event.Text)
 			if !userAborted.Load() && time.Since(lastUpdate) > throttle {
 				elapsed := int(time.Since(startTime).Seconds())
+				displayText := feishu.FilterCodeBlocks(textBuf.String(), h.cfg.CompactStream)
 				cardMu.Lock()
 				if !cardFinished {
-					h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(textBuf.String(), "", elapsed, abortID))
+					h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
 					lastUpdate = time.Now()
 				}
 				cardMu.Unlock()
@@ -125,6 +126,10 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 			textBuf.WriteString(fmt.Sprintf("\n\n🔧 **%s** 执行中...\n", event.ToolName))
 
 		case "tool_result":
+			// CompactStream 模式下跳过 tool_result 输出，只显示过程和最终结果
+			if h.cfg.CompactStream {
+				break
+			}
 			resultText := event.Text
 			if len(resultText) > 500 {
 				resultText = resultText[:500] + "...(已截断)"
@@ -140,7 +145,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	})
 
 	elapsed := int(time.Since(startTime).Seconds())
-	finalText := textBuf.String()
+	finalText := feishu.FilterCodeBlocks(textBuf.String(), h.cfg.CompactStream)
 
 	// 持锁发送最终卡片，确保它一定在所有流式更新之后到达飞书
 	cardMu.Lock()
