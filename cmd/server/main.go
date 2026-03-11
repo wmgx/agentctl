@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -115,6 +116,10 @@ func main() {
 			return ""
 		}
 
+		// 判断是否为 form_submit 触发（FormValue 非空）
+		// form_submit 按钮必须在回调中同步返回新卡片，否则飞书会恢复原始表单
+		isFormSubmit := len(action.FormValue) > 0
+
 		// 确定要显示的卡片（禁用按钮状态）
 		var cardObj map[string]interface{}
 		switch action.Action {
@@ -168,10 +173,24 @@ func main() {
 			}
 		}
 
-		// 通过 UpdateCard API 更新卡片，避免 card.action.trigger 回调响应体格式问题（飞书错误 200672）
-		if cardObj != nil && action.MessageID != "" {
-			feishuCli.UpdateCard(appCtx, action.MessageID, cardObj)
+		if cardObj == nil || action.MessageID == "" {
+			return ""
 		}
+
+		if isFormSubmit {
+			// form_submit：通过回调同步返回新卡片，防止飞书恢复原始表单
+			// event.go 会将此 JSON 字符串放入 CardActionTriggerResponse 同步返回给飞书
+			cardJSON, err := json.Marshal(cardObj)
+			if err != nil {
+				log.Printf("[main] marshal card for form_submit failed: %v", err)
+				feishuCli.UpdateCard(appCtx, action.MessageID, cardObj)
+				return ""
+			}
+			return string(cardJSON)
+		}
+
+		// 普通按钮：通过 UpdateCard API 异步更新，避免 card.action.trigger 回调格式问题（飞书错误 200672）
+		feishuCli.UpdateCard(appCtx, action.MessageID, cardObj)
 		return ""
 	})
 
