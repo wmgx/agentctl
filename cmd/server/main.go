@@ -164,9 +164,26 @@ func main() {
 			}); err == nil {
 				immediateCard = string(b)
 			}
+		case "approve":
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.ApprovalCardDone(true),
+			}); err == nil {
+				immediateCard = string(b)
+			}
+		case "deny":
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.ApprovalCardDone(false),
+			}); err == nil {
+				immediateCard = string(b)
+			}
 		case "stop_stream":
-			// 不需要立即返回卡片：mutex 保证中断卡片在所有流式更新之后到达飞书
-			// 普通按钮（非 form_submit）不会因为 callback 未返回新卡片而恢复原卡片样式
+			// 立即返回禁用状态，防止用户重复点击停止按钮
+			// 最终卡片（StreamingCardAborted）通过 mutex 序列化的 UpdateCard 到达飞书，替换此占位卡片
+			if b, err := json.Marshal(map[string]interface{}{
+				"card": feishu.StreamingCardStopping(),
+			}); err == nil {
+				immediateCard = string(b)
+			}
 		}
 
 		ok := pendingAction.Resolve(requestID, feishu.ActionResult{

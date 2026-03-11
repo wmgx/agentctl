@@ -35,13 +35,14 @@ type Config struct {
 	BotOpenID              string            `json:"bot_open_id,omitempty"`             // Bot 自身的 open_id，用于区分历史消息发送者
 	ChainUpgradeThreshold  int               `json:"chain_upgrade_threshold,omitempty"` // P2P 引用链触发升级群聊的轮数，默认 4
 	LogRetentionDays       int               `json:"log_retention_days,omitempty"`      // 日志保留天数，超过后自动删除，默认 7
+	CompactStream          bool              `json:"compact_stream,omitempty"`          // 流式输出时隐藏代码块，只显示过程和结果，默认 false
 
 	path string // 配置文件路径，运行时赋值，不序列化
 }
 
 func DefaultDataDir() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agent-for-im")
+	return filepath.Join(home, ".agentctl")
 }
 
 // EnsureConfig checks if config file exists. If not, runs interactive setup.
@@ -52,7 +53,7 @@ func EnsureConfig(path string) (bool, error) {
 	}
 
 	fmt.Println("=== 首次启动配置 ===")
-	fmt.Println("未检测到配置文件，开始交互式配置。\n")
+	fmt.Println("未检测到配置文件，开始交互式配置。")
 
 	reader := bufio.NewReader(os.Stdin)
 	prompt := func(label, hint, defaultVal string) string {

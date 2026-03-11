@@ -595,6 +595,72 @@ func StreamingCardWithAbort(content, tokenInfo string, elapsedSec int, abortID s
 	}
 }
 
+// ApprovalCardDone 生成审批卡片的完成状态（禁用交互）
+func ApprovalCardDone(approved bool) map[string]interface{} {
+	var headerTitle, headerColor string
+	if approved {
+		headerTitle = "✅ 已批准"
+		headerColor = "green"
+	} else {
+		headerTitle = "❌ 已拒绝"
+		headerColor = "red"
+	}
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": headerTitle},
+			"template": headerColor,
+		},
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag": "action",
+				"actions": []interface{}{
+					map[string]interface{}{
+						"tag":      "button",
+						"text":     map[string]string{"tag": "plain_text", "content": "批准"},
+						"type":     "primary",
+						"disabled": true,
+					},
+					map[string]interface{}{
+						"tag":      "button",
+						"text":     map[string]string{"tag": "plain_text", "content": "拒绝"},
+						"type":     "danger",
+						"disabled": true,
+					},
+				},
+			},
+		},
+	}
+}
+
+// StreamingCardStopping 生成正在停止状态的卡片（停止按钮已禁用）。
+// 用于用户点击"停止"后立即回显，防止重复点击。
+// 最终卡片由 UpdateCard 通过 mutex 有序替换。
+func StreamingCardStopping() map[string]interface{} {
+	return map[string]interface{}{
+		"header": map[string]interface{}{
+			"title":    map[string]string{"tag": "plain_text", "content": "🔄 正在停止..."},
+			"template": "yellow",
+		},
+		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":     "markdown",
+				"content": "正在中断，请稍候...",
+			},
+			map[string]interface{}{
+				"tag": "action",
+				"actions": []interface{}{
+					map[string]interface{}{
+						"tag":      "button",
+						"text":     map[string]string{"tag": "plain_text", "content": "🛑 停止"},
+						"type":     "danger",
+						"disabled": true,
+					},
+				},
+			},
+		},
+	}
+}
+
 // StreamingCardAborted 生成流式回复卡片的已中断状态。
 // 保留已输出内容，header 标记为"已中断"。
 func StreamingCardAborted(content, tokenInfo string, elapsedSec int) map[string]interface{} {
