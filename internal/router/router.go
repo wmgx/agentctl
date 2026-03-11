@@ -545,7 +545,8 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 	confirmID := uuid.New().String()
 	log.Printf("[router] handleSession: sending confirm card, confirm_id=%s", confirmID)
 	card := feishu.SessionConfirmCard(topic, reason, r.cfg.Repos, r.cfg.DefaultCwd, confirmID)
-	if _, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card); err != nil {
+	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card)
+	if err != nil {
 		log.Printf("[router] handleSession: ReplyCard error: %v", err)
 		r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("⚠️ 发送卡片失败: %v", err))
 		return
@@ -560,7 +561,7 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 			case "confirm_session_with_cwd":
 				cwd := extractCwd(action, r.cfg.DefaultCwd)
 				r.maybeAddRepo(cwd)
-				r.createSession(ctx, msg, result, cwd)
+				r.createSession(ctx, msg, result, cwd, cardMsgID)
 			case "deny_session":
 				r.handleDirect(ctx, msg)
 			default:
@@ -604,7 +605,7 @@ func extractCwd(action feishu.ActionResult, defaultCwd string) string {
 	return defaultCwd
 }
 
-func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd string) {
+func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd, confirmCardMsgID string) {
 	name := result.Topic
 	if name == "" {
 		name = "新会话"
@@ -645,7 +646,13 @@ func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, 
 	r.store.Save()
 
 	r.feishuCli.SendText(ctx, chatID, fmt.Sprintf("会话已创建\n主题: %s\n工作目录: %s\n\n正在处理你的请求...", name, cwd))
-	r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("已创建新会话 [%s]，请到新群继续", name))
+
+	// 建群完成后更新确认卡片，显示群名（替代单独发送的通知消息）
+	if confirmCardMsgID != "" {
+		if err := r.feishuCli.UpdateCard(ctx, confirmCardMsgID, feishu.SessionConfirmCardDone(true, groupName)); err != nil {
+			log.Printf("[session] update confirm card with group name error: %v", err)
+		}
+	}
 }
 
 func (r *Router) handleSystem(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {

@@ -136,15 +136,24 @@ func (el *EventListener) Start(ctx context.Context) error {
 		log.Printf("[event] card action: open_id=%s, action=%s, request_id=%s, is_form=%v",
 			openID, action.Action, strValue["request_id"], len(formValue) > 0)
 		cardJSON := el.onCardAction(ctx, action)
-		// form_submit 按钮需要在回调中同步返回新卡片，否则飞书会自动恢复原始表单
-		// 普通按钮返回 nil（通过 UpdateCard API 异步更新即可）
+		// 含有 form 元素的卡片，所有按钮点击后都需要在回调中同步返回新卡片
+		// 否则飞书会恢复原始 form 状态（不论是 form_submit 还是普通按钮）
+		// Type 必须为 "raw"（SDK model.go 注释：// template/raw），"card_json" 会导致 200672 错误
 		if cardJSON != "" {
-			return &callback.CardActionTriggerResponse{
-				Card: &callback.Card{
-					Type: "card_json",
-					Data: cardJSON, // 传字符串而非对象，飞书期望的格式
-				},
-			}, nil
+			var cardData interface{}
+			if err := json.Unmarshal([]byte(cardJSON), &cardData); err == nil {
+				return &callback.CardActionTriggerResponse{
+					Card: &callback.Card{
+						Type: "raw",
+						Data: cardData,
+					},
+				}, nil
+			}
+			preview := cardJSON
+		if len(preview) > 100 {
+			preview = preview[:100]
+		}
+		log.Printf("[event] card action: failed to parse card JSON for sync response: %v", preview)
 		}
 		return nil, nil
 	})

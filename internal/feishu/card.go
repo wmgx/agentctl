@@ -398,13 +398,18 @@ func ChainUpgradeCardDone(status string, depth int) map[string]interface{} {
 	}
 }
 
-// SessionConfirmCardDone 生成建群确认卡片的完成状态（禁用交互）
-func SessionConfirmCardDone(confirmed bool) map[string]interface{} {
+// SessionConfirmCardDone 生成建群确认卡片的完成状态（禁用交互）。
+// groupName 为空时仅显示"会话已创建"；非空时额外展示群名，供建群完成后更新用。
+func SessionConfirmCardDone(confirmed bool, groupName string) map[string]interface{} {
 	var headerTitle, headerColor, bodyText string
 	if confirmed {
 		headerTitle = "✅ 已创建群聊会话"
 		headerColor = "green"
-		bodyText = "会话已创建，请到新群继续对话。"
+		if groupName != "" {
+			bodyText = fmt.Sprintf("已创建群聊 **%s**，请到新群继续对话。", groupName)
+		} else {
+			bodyText = "会话已创建，请到新群继续对话。"
+		}
 	} else {
 		headerTitle = "已选择直接回复"
 		headerColor = "grey"
