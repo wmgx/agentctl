@@ -28,6 +28,7 @@ type ChatDisbandHandler func(ctx context.Context, chatID string)
 
 type CardAction struct {
 	OpenID    string
+	ChatID    string
 	MessageID string
 	Action    string
 	Value     map[string]string
@@ -100,12 +101,13 @@ func (el *EventListener) Start(ctx context.Context) error {
 		}
 		req := event.Event
 
-		var openID, msgID string
+		var openID, msgID, chatID string
 		if req.Operator != nil {
 			openID = req.Operator.OpenID
 		}
 		if req.Context != nil {
 			msgID = req.Context.OpenMessageID
+			chatID = req.Context.OpenChatID
 		}
 
 		strValue := make(map[string]string)
@@ -125,6 +127,7 @@ func (el *EventListener) Start(ctx context.Context) error {
 
 		action := CardAction{
 			OpenID:    openID,
+			ChatID:    chatID,
 			MessageID: msgID,
 			Action:    strValue["action"],
 			Value:     strValue,
