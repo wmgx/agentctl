@@ -159,6 +159,15 @@ func (el *EventListener) Start(ctx context.Context) error {
 		return nil
 	})
 
+	// 注册 reaction 事件的空处理器，避免 SDK 输出 "[Error] not found handler" 噪音日志
+	// 这些事件由 bot 自身添加/移除 OnIt emoji 产生，无需业务处理
+	eventDispatcher.OnP2MessageReactionCreatedV1(func(_ context.Context, _ *larkim.P2MessageReactionCreatedV1) error {
+		return nil
+	})
+	eventDispatcher.OnP2MessageReactionDeletedV1(func(_ context.Context, _ *larkim.P2MessageReactionDeletedV1) error {
+		return nil
+	})
+
 	wsClient := larkws.NewClient(el.appID, el.appSecret,
 		larkws.WithEventHandler(eventDispatcher),
 		larkws.WithLogLevel(larkcore.LogLevelDebug),
