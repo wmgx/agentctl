@@ -157,6 +157,7 @@ func SessionConfirmCard(topic, reason string, repos map[string]string, defaultCw
 			},
 			map[string]interface{}{
 				"tag":         "button",
+				"name":        "submit_session",
 				"action_type": "form_submit",
 				"text":        map[string]string{"tag": "plain_text", "content": "✅ 建立群聊会话"},
 				"type":        "primary",
@@ -247,6 +248,7 @@ func CwdSelectionCard(repos map[string]string, defaultCwd, requestID string) map
 				},
 				map[string]interface{}{
 					"tag":         "button",
+					"name":        "submit_cwd",
 					"action_type": "form_submit",
 					"text":        map[string]string{"tag": "plain_text", "content": "✅ 确认路径"},
 					"type":        "primary",
@@ -465,6 +467,7 @@ func QuestionCard(title string, options []string, hasCustom bool, requestID stri
 				},
 				map[string]interface{}{
 					"tag":         "button",
+					"name":        "submit_answer",
 					"action_type": "form_submit",
 					"text":        map[string]string{"tag": "plain_text", "content": "✅ 发送"},
 					"type":        "primary",
