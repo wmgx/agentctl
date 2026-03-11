@@ -123,7 +123,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 			if h.isDangerous(event.ToolName, event.ToolInput) {
 				h.handleDangerousTool(ctx, msg.ChatID, event)
 			}
-			textBuf.WriteString(fmt.Sprintf("\n\n🔧 **%s** 执行中...\n", event.ToolName))
+			// 简洁模式：不显示工具执行提示，只保留思考和结果
+			// textBuf.WriteString(fmt.Sprintf("\n\n🔧 **%s** 执行中...\n", event.ToolName))
 
 		case "tool_result":
 			// CompactStream 模式下跳过 tool_result 输出，只显示过程和最终结果
