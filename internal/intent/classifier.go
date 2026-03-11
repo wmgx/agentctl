@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,20 @@ import (
 	"github.com/wmgx/agentctl/internal/claude"
 	"github.com/wmgx/agentctl/internal/session"
 )
+
+// ClassifyTrace 记录意图分类的性能追踪信息
+type ClassifyTrace struct {
+	StartTime         time.Time
+	SkillLoadDuration time.Duration
+	PromptDuration    time.Duration
+	APIDuration       time.Duration
+	ParseDuration     time.Duration
+	TotalDuration     time.Duration
+	PromptSize        int // system prompt 大小（字符数）
+	UserMsgSize       int // user prompt 大小（字符数）
+	SkillCount        int // 加载的 skill 数量
+	CacheHit          bool
+}
 
 type Classifier struct {
 	adapter         *claude.Adapter
@@ -96,22 +111,29 @@ func EnsureDefaultPrompts(promptsDir string) error {
 
 // getQuickActionSkills 获取"一键操作类" skill 列表。
 // 带 1 分钟缓存，懒加载（首次调用时才读取文件系统）。
-func (c *Classifier) getQuickActionSkills() string {
+// 返回值：(skill 列表, skill 数量, 加载耗时, 是否命中缓存)
+func (c *Classifier) getQuickActionSkills() (string, int, time.Duration, bool) {
+	start := time.Now()
+
 	// 检查缓存是否有效
 	if c.skillsCache != "" && time.Since(c.skillsCacheTime) < c.skillsCacheTTL {
-		return c.skillsCache
+		count := strings.Count(c.skillsCache, "\n") + 1
+		if c.skillsCache == "" {
+			count = 0
+		}
+		return c.skillsCache, count, time.Since(start), true
 	}
 
 	// 缓存过期或为空，重新读取
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "" // 读取失败，返回空字符串
+		return "", 0, time.Since(start), false // 读取失败，返回空字符串
 	}
 
 	skillsDir := filepath.Join(home, ".claude", "skills")
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
-		return "" // 目录不存在或读取失败
+		return "", 0, time.Since(start), false // 目录不存在或读取失败
 	}
 
 	var quickSkills []string
@@ -138,7 +160,8 @@ func (c *Classifier) getQuickActionSkills() string {
 	// 缓存结果
 	c.skillsCache = strings.Join(quickSkills, "\n")
 	c.skillsCacheTime = time.Now()
-	return c.skillsCache
+	duration := time.Since(start)
+	return c.skillsCache, len(quickSkills), duration, false
 }
 
 // extractDescription 从 SKILL.md 中提取 description 字段
@@ -179,7 +202,8 @@ func isQuickActionSkill(desc string) bool {
 // 优先读取外部文件（promptFile），文件不存在则用内置模板。
 // 模板中 {{threshold}} 替换为实际阈值，{{threshold_minus1}} 替换为 threshold-1，
 // {{skills}} 替换为动态获取的 skill 列表。
-func (c *Classifier) buildSystemPrompt() string {
+// 返回值：(prompt 内容, skill 数量, skill 加载耗时, 是否命中缓存)
+func (c *Classifier) buildSystemPrompt() (string, int, time.Duration, bool) {
 	tpl := defaultSystemPromptTpl
 	if c.promptFile != "" {
 		if data, err := os.ReadFile(c.promptFile); err == nil {
@@ -194,13 +218,16 @@ func (c *Classifier) buildSystemPrompt() string {
 	tpl = strings.ReplaceAll(tpl, "{{threshold_minus1}}", tm1)
 
 	// 替换 skill 列表
-	skills := c.getQuickActionSkills()
+	skills, count, duration, cacheHit := c.getQuickActionSkills()
 	tpl = strings.ReplaceAll(tpl, "{{skills}}", skills)
 
-	return tpl
+	return tpl, count, duration, cacheHit
 }
 
 func (c *Classifier) Classify(ctx context.Context, userMsg string, activeSessions []*session.Session) (*ClassifyResult, error) {
+	trace := &ClassifyTrace{StartTime: time.Now()}
+
+	// 1. 构建 session 摘要
 	sessionsSummary := "当前无活跃会话"
 	if len(activeSessions) > 0 {
 		sessionsSummary = "当前活跃会话:\n"
@@ -209,22 +236,37 @@ func (c *Classifier) Classify(ctx context.Context, userMsg string, activeSession
 		}
 	}
 
-	sysPrompt := c.buildSystemPrompt()
+	// 2. 构建 system prompt（包含 skill 列表加载）
+	promptStart := time.Now()
+	sysPrompt, skillCount, skillLoadDuration, cacheHit := c.buildSystemPrompt()
+	trace.SkillLoadDuration = skillLoadDuration
+	trace.PromptDuration = time.Since(promptStart)
+	trace.PromptSize = len(sysPrompt)
+	trace.SkillCount = skillCount
+	trace.CacheHit = cacheHit
+
 	userPrompt := fmt.Sprintf("用户消息: %s\n\n%s", userMsg, sessionsSummary)
+	trace.UserMsgSize = len(userPrompt)
 
 	classifyCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// 使用独立的 system prompt，不受全局 CLAUDE.md 配置影响
+	// 3. 调用 Claude API
+	apiStart := time.Now()
 	raw, err := c.adapter.RunOnceWithOptions(classifyCtx, userPrompt, claude.RunOnceOptions{
 		Model:        c.model,
 		NoTools:      true,
 		SystemPrompt: sysPrompt,
 	})
+	trace.APIDuration = time.Since(apiStart)
+
 	if err != nil {
+		log.Printf("[TRACE] Classify failed after %v: %v", time.Since(trace.StartTime), err)
 		return nil, fmt.Errorf("classify: %w", err)
 	}
 
+	// 4. 解析 JSON
+	parseStart := time.Now()
 	cleaned := strings.TrimSpace(raw)
 	// 去除 markdown 代码块标记
 	if strings.HasPrefix(cleaned, "```") {
@@ -246,7 +288,44 @@ func (c *Classifier) Classify(ctx context.Context, userMsg string, activeSession
 
 	var result ClassifyResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		trace.ParseDuration = time.Since(parseStart)
+		trace.TotalDuration = time.Since(trace.StartTime)
+		log.Printf("[TRACE] JSON parse failed after %v: %v", trace.TotalDuration, err)
 		return nil, fmt.Errorf("parse intent: %w (raw: %s)", err, raw)
 	}
+	trace.ParseDuration = time.Since(parseStart)
+	trace.TotalDuration = time.Since(trace.StartTime)
+
+	// 5. 输出 trace 信息
+	logClassifyTrace(trace, &result)
+
 	return &result, nil
+}
+
+// logClassifyTrace 输出意图分类的性能追踪信息
+func logClassifyTrace(trace *ClassifyTrace, result *ClassifyResult) {
+	cacheStatus := "MISS"
+	if trace.CacheHit {
+		cacheStatus = "HIT"
+	}
+
+	log.Printf(`
+[INTENT TRACE] =====================================
+  Total:         %v
+  ├─ Skill Load: %v (cache: %s, count: %d)
+  ├─ Prompt:     %v (size: %d chars)
+  ├─ API Call:   %v ⚠️  <-- 主要耗时
+  └─ Parse:      %v
+
+  User Msg Size: %d chars
+  Result:        intent=%s, topic=%s
+=========================================`,
+		trace.TotalDuration,
+		trace.SkillLoadDuration, cacheStatus, trace.SkillCount,
+		trace.PromptDuration, trace.PromptSize,
+		trace.APIDuration,
+		trace.ParseDuration,
+		trace.UserMsgSize,
+		result.Intent, result.Topic,
+	)
 }
