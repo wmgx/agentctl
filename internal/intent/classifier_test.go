@@ -136,6 +136,79 @@ func TestCleanupJSONWithExtraText(t *testing.T) {
 	}
 }
 
+func TestExtractDescription(t *testing.T) {
+	testCases := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{
+			name: "标准格式",
+			content: `---
+name: db-perm
+description: 申请 ByteCloud 数据库权限
+---`,
+			expected: "申请 ByteCloud 数据库权限",
+		},
+		{
+			name: "多余空格",
+			content: `---
+name: api-test
+description:    测试 RPC/HTTP 接口
+---`,
+			expected: "测试 RPC/HTTP 接口",
+		},
+		{
+			name: "无 description",
+			content: `---
+name: test
+---`,
+			expected: "",
+		},
+		{
+			name:     "空内容",
+			content:  "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := extractDescription(tc.content)
+			if result != tc.expected {
+				t.Errorf("extractDescription() = %q, want %q", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsQuickActionSkill(t *testing.T) {
+	testCases := []struct {
+		name     string
+		desc     string
+		expected bool
+	}{
+		{"申请数据库权限", "申请 ByteCloud 数据库权限", true},
+		{"测试接口", "测试 RPC/HTTP 接口", true},
+		{"操作 TCC", "操作 TCC 配置", true},
+		{"运行单测", "运行 Go 单元测试 bits-ut", true},
+		{"升级服务", "升级 TCE 服务版本", true},
+		{"英文 test", "Run API tests", true},
+		{"英文 deploy", "Deploy to production", true},
+		{"不匹配", "帮助用户写代码", false},
+		{"空描述", "", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isQuickActionSkill(tc.desc)
+			if result != tc.expected {
+				t.Errorf("isQuickActionSkill(%q) = %v, want %v", tc.desc, result, tc.expected)
+			}
+		})
+	}
+}
+
 func TestCleanupEdgeCases(t *testing.T) {
 	t.Run("没有大括号", func(t *testing.T) {
 		raw := "没有JSON内容"

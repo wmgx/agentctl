@@ -14,17 +14,26 @@ import (
 )
 
 type Classifier struct {
-	adapter    *claude.Adapter
-	model      string
-	threshold  int // 超过此轮数视为 session，来自 config.ChainUpgradeThreshold
-	promptFile string
+	adapter         *claude.Adapter
+	model           string
+	threshold       int // 超过此轮数视为 session，来自 config.ChainUpgradeThreshold
+	promptFile      string
+	skillsCache     string    // 缓存的 skill 列表字符串
+	skillsCacheTime time.Time // 缓存更新时间
+	skillsCacheTTL  time.Duration
 }
 
 func NewClassifier(adapter *claude.Adapter, model string, threshold int, promptFile string) *Classifier {
 	if threshold <= 0 {
 		threshold = 4
 	}
-	return &Classifier{adapter: adapter, model: model, threshold: threshold, promptFile: promptFile}
+	return &Classifier{
+		adapter:        adapter,
+		model:          model,
+		threshold:      threshold,
+		promptFile:     promptFile,
+		skillsCacheTTL: 1 * time.Minute,
+	}
 }
 
 // defaultSystemPromptTpl 内置 prompt 模板，{{threshold}} 会被替换为实际阈值
@@ -35,12 +44,21 @@ const defaultSystemPromptTpl = `你是意图分类器。根据用户消息和现
 - 不要添加任何前缀或后缀（如"喵～"等）
 - 不要使用 markdown 代码块
 
+【可用的一键操作 skill】
+系统提供以下专用 skill，可快速完成特定任务（1-2轮即可）：
+{{skills}}
+
+【特别注意】
+如果用户请求可通过上述 skill 一键完成，即使看起来需要多轮确认信息（如申请权限、测试接口等），也应分类为 "direct"。
+
 判断逻辑——先估算"预期交互轮数"，再决定意图：
 
 预期交互轮数估算：
 - 1轮可解决：翻译、查词、算数、解释代码片段、问概念、简单问答
-- 2-{{threshold_minus1}}轮可解决：写一个小函数/脚本、修复明确的bug、代码review、短文生成、代码生成（小而明确的需求）
-- {{threshold}}+轮才能完成：实现完整功能模块、从零搭建项目、持续调试复杂问题、需要读写本地文件/执行命令、重构大段代码、用户描述模糊需要多次确认
+- 2-{{threshold_minus1}}轮可解决：
+  * 写小函数/脚本、修bug、代码review、短文生成、代码生成（小而明确的需求）
+  * **可通过上述 skill 一键完成的任务**（如申请权限、测试接口、操作配置等）
+- {{threshold}}+轮才能完成：实现功能模块、搭建项目、复杂调试、持续迭代且无对应 skill、用户描述模糊需要多次确认
 
 意图类型：
 - "direct": 预期 1-{{threshold_minus1}} 轮可解决。包括：问答、解释、翻译、写小函数、修单个bug、小段代码生成
@@ -76,9 +94,91 @@ func EnsureDefaultPrompts(promptsDir string) error {
 	return nil
 }
 
+// getQuickActionSkills 获取"一键操作类" skill 列表。
+// 带 1 分钟缓存，懒加载（首次调用时才读取文件系统）。
+func (c *Classifier) getQuickActionSkills() string {
+	// 检查缓存是否有效
+	if c.skillsCache != "" && time.Since(c.skillsCacheTime) < c.skillsCacheTTL {
+		return c.skillsCache
+	}
+
+	// 缓存过期或为空，重新读取
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "" // 读取失败，返回空字符串
+	}
+
+	skillsDir := filepath.Join(home, ".claude", "skills")
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return "" // 目录不存在或读取失败
+	}
+
+	var quickSkills []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillName := entry.Name()
+		skillFile := filepath.Join(skillsDir, skillName, "SKILL.md")
+
+		data, err := os.ReadFile(skillFile)
+		if err != nil {
+			continue
+		}
+
+		content := string(data)
+		// 提取 description 字段（格式：description: xxx）
+		desc := extractDescription(content)
+		if isQuickActionSkill(desc) {
+			quickSkills = append(quickSkills, fmt.Sprintf("- %s: %s", skillName, desc))
+		}
+	}
+
+	// 缓存结果
+	c.skillsCache = strings.Join(quickSkills, "\n")
+	c.skillsCacheTime = time.Now()
+	return c.skillsCache
+}
+
+// extractDescription 从 SKILL.md 中提取 description 字段
+func extractDescription(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if desc, found := strings.CutPrefix(line, "description:"); found {
+			return strings.TrimSpace(desc)
+		}
+	}
+	return ""
+}
+
+// isQuickActionSkill 判断是否为"一键操作类" skill
+func isQuickActionSkill(desc string) bool {
+	if desc == "" {
+		return false
+	}
+	lower := strings.ToLower(desc)
+
+	// 关键词匹配：申请、测试、操作、升级、运行、列出、部署等
+	keywords := []string{
+		"申请", "权限", "测试", "操作", "升级", "运行", "列出", "部署",
+		"run", "test", "operate", "upgrade", "list", "deploy", "apply",
+		"tcc", "bytecloud", "bits-ut", "api", "rpc", "http",
+	}
+
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildSystemPrompt 返回最终 system prompt。
 // 优先读取外部文件（promptFile），文件不存在则用内置模板。
-// 模板中 {{threshold}} 替换为实际阈值，{{threshold_minus1}} 替换为 threshold-1。
+// 模板中 {{threshold}} 替换为实际阈值，{{threshold_minus1}} 替换为 threshold-1，
+// {{skills}} 替换为动态获取的 skill 列表。
 func (c *Classifier) buildSystemPrompt() string {
 	tpl := defaultSystemPromptTpl
 	if c.promptFile != "" {
@@ -86,10 +186,17 @@ func (c *Classifier) buildSystemPrompt() string {
 			tpl = string(data)
 		}
 	}
+
+	// 替换阈值
 	t := fmt.Sprintf("%d", c.threshold)
 	tm1 := fmt.Sprintf("%d", c.threshold-1)
 	tpl = strings.ReplaceAll(tpl, "{{threshold}}", t)
 	tpl = strings.ReplaceAll(tpl, "{{threshold_minus1}}", tm1)
+
+	// 替换 skill 列表
+	skills := c.getQuickActionSkills()
+	tpl = strings.ReplaceAll(tpl, "{{skills}}", skills)
+
 	return tpl
 }
 
