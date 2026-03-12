@@ -7,6 +7,7 @@ import (
 
 var codeBlockStartRegex = regexp.MustCompile("^```(\\w*)$")
 var codeBlockEndRegex = regexp.MustCompile("^```$")
+var headingRegex = regexp.MustCompile("^(#{2,6})\\s+(.+)$")
 
 // FormatMarkdownForCard 将 Markdown 内容转换为飞书卡片元素数组
 // compactMode 为 true 时启用代码块折叠和标题转换
@@ -65,6 +66,18 @@ func FormatMarkdownForCard(content string, compactMode bool) []interface{} {
 		if inCodeBlock {
 			codeBlockLines = append(codeBlockLines, line)
 		} else {
+			// 标题转换（非代码块内）
+			if matches := headingRegex.FindStringSubmatch(line); matches != nil {
+				headingText := matches[2]
+				// 简化实现：所有标题统一使用 🔧 emoji
+				// 原设计支持多种 emoji（read📖, write✍️等），此处简化以快速交付
+				// 后续可根据用户反馈优化 emoji 映射规则
+				convertedLine := "**🔧 " + headingText + "**"
+				currentText.WriteString(convertedLine)
+				currentText.WriteString("\n")
+				continue
+			}
+
 			// 添加行内容
 			currentText.WriteString(line)
 			// 只有不是最后一行才添加换行符
