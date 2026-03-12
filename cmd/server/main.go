@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -127,9 +128,9 @@ func main() {
 			fmt.Sscanf(action.Value["depth"], "%d", &depth)
 			cardObj = feishu.ChainUpgradeCardDone("dismissed", depth)
 		case "confirm_session_with_cwd":
-			cardObj = feishu.SessionConfirmCardDone(true)
+			cardObj = feishu.SessionConfirmCardDone(true, "") // 群名在 createSession 完成后由 router 更新
 		case "deny_session":
-			cardObj = feishu.SessionConfirmCardDone(false)
+			cardObj = feishu.SessionConfirmCardDone(false, "")
 		case "select_cwd":
 			cardObj = feishu.CwdSelectionCardDone("processing")
 		case "choose_option":
@@ -168,11 +169,19 @@ func main() {
 			}
 		}
 
-		// 通过 UpdateCard API 更新卡片，避免 card.action.trigger 回调响应体格式问题（飞书错误 200672）
-		if cardObj != nil && action.MessageID != "" {
-			feishuCli.UpdateCard(appCtx, action.MessageID, cardObj)
+		if cardObj == nil || action.MessageID == "" {
+			return ""
 		}
-		return ""
+
+		// 通过回调同步返回新卡片，使用 Type:"raw"（飞书要求的格式）
+		// 含有 form 元素的卡片，所有按钮点击后都需要同步返回卡片，否则飞书恢复原始 form
+		// event.go 负责将此 JSON 解析后放入 CardActionTriggerResponse{Card:{Type:"raw"}} 返回
+		cardJSON, err := json.Marshal(cardObj)
+		if err != nil {
+			log.Printf("[main] marshal card failed: %v", err)
+			return ""
+		}
+		return string(cardJSON)
 	})
 
 	eventListener.OnMessage(func(_ context.Context, msg feishu.IncomingMessage) {

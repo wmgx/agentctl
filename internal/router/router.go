@@ -354,7 +354,7 @@ func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
 	}
 
 	// 先发一个流式卡片作为回复占位
-	initCard := feishu.StreamingCard("正在思考...", false, "")
+	initCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, initCard)
 	if err != nil {
 		log.Printf("[router] reply card error: %v, falling back to text", err)
@@ -397,7 +397,7 @@ dialogLoop:
 
 		// 更新卡片为带停止按钮的进行中状态
 		elapsed := int(time.Since(startTime).Seconds())
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID, r.cfg.CompactStream))
 
 		var (
 			textBuf    strings.Builder
@@ -425,7 +425,7 @@ dialogLoop:
 					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
 					cardMu.Lock()
 					if !cardFinished {
-						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID, r.cfg.CompactStream))
 						lastUpdate = time.Now()
 					}
 					cardMu.Unlock()
@@ -455,7 +455,7 @@ dialogLoop:
 			// 持锁发送最终卡片，确保它在所有流式更新之后到达飞书
 			cardMu.Lock()
 			cardFinished = true
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
@@ -471,14 +471,14 @@ dialogLoop:
 		cardFinished = true
 		if question == nil {
 			// 普通回复，更新卡片并结束
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
 		cardMu.Unlock()
 
 		// 有问题标记：更新卡片显示回复文本（已完成），再单独发问题选择卡片
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 
 		requestID := uuid.New().String()
 		questionCard := feishu.QuestionCard(question.Title, question.Options, question.HasCustom, requestID)
@@ -506,7 +506,7 @@ dialogLoop:
 		}
 
 		// 为新一轮回复新建一个卡片
-		newCard := feishu.StreamingCard("正在思考...", false, "")
+		newCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 		cardMsgID, _ = r.feishuCli.SendCard(ctx, msg.ChatID, newCard)
 	}
 }
@@ -545,7 +545,8 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 	confirmID := uuid.New().String()
 	log.Printf("[router] handleSession: sending confirm card, confirm_id=%s", confirmID)
 	card := feishu.SessionConfirmCard(topic, reason, r.cfg.Repos, r.cfg.DefaultCwd, confirmID)
-	if _, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card); err != nil {
+	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, card)
+	if err != nil {
 		log.Printf("[router] handleSession: ReplyCard error: %v", err)
 		r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("⚠️ 发送卡片失败: %v", err))
 		return
@@ -560,7 +561,7 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 			case "confirm_session_with_cwd":
 				cwd := extractCwd(action, r.cfg.DefaultCwd)
 				r.maybeAddRepo(cwd)
-				r.createSession(ctx, msg, result, cwd)
+				r.createSession(ctx, msg, result, cwd, cardMsgID)
 			case "deny_session":
 				r.handleDirect(ctx, msg)
 			default:
@@ -604,7 +605,7 @@ func extractCwd(action feishu.ActionResult, defaultCwd string) string {
 	return defaultCwd
 }
 
-func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd string) {
+func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult, cwd, confirmCardMsgID string) {
 	name := result.Topic
 	if name == "" {
 		name = "新会话"
@@ -645,7 +646,13 @@ func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, 
 	r.store.Save()
 
 	r.feishuCli.SendText(ctx, chatID, fmt.Sprintf("会话已创建\n主题: %s\n工作目录: %s\n\n正在处理你的请求...", name, cwd))
-	r.feishuCli.SendText(ctx, msg.ChatID, fmt.Sprintf("已创建新会话 [%s]，请到新群继续", name))
+
+	// 建群完成后更新确认卡片，显示群名（替代单独发送的通知消息）
+	if confirmCardMsgID != "" {
+		if err := r.feishuCli.UpdateCard(ctx, confirmCardMsgID, feishu.SessionConfirmCardDone(true, groupName)); err != nil {
+			log.Printf("[session] update confirm card with group name error: %v", err)
+		}
+	}
 }
 
 func (r *Router) handleSystem(ctx context.Context, msg feishu.IncomingMessage, result *intent.ClassifyResult) {
