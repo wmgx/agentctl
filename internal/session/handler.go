@@ -95,10 +95,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	)
 
 	h.adapter.Run(runCtx, claude.RunOptions{
-		Prompt:          msg.Text,
-		Cwd:             sess.WorkingDir,
-		ResumeSessionID: sess.CLISessionID,
-		Model:           sess.Model,
+		Prompt:             msg.Text,
+		Cwd:                sess.WorkingDir,
+		ResumeSessionID:    sess.CLISessionID,
+		Model:              sess.Model,
+		AppendSystemPrompt: `当需要用户选择时（无论是 brainstorming、技术方案、参数选择等），优先使用 AskUserQuestion 工具展示交互式卡片，而非纯文本列表（如"A. 选项1 B. 选项2"）。`,
 	}, func(event claude.Event) {
 		switch event.Type {
 		case "session_init":
