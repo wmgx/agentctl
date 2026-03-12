@@ -393,7 +393,7 @@ dialogLoop:
 
 		// 更新卡片为带停止按钮的进行中状态
 		elapsed := int(time.Since(startTime).Seconds())
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID, r.cfg.CompactStream))
 
 		var (
 			textBuf    strings.Builder
@@ -421,7 +421,7 @@ dialogLoop:
 					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
 					cardMu.Lock()
 					if !cardFinished {
-						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID, r.cfg.CompactStream))
 						lastUpdate = time.Now()
 					}
 					cardMu.Unlock()
@@ -451,7 +451,7 @@ dialogLoop:
 			// 持锁发送最终卡片，确保它在所有流式更新之后到达飞书
 			cardMu.Lock()
 			cardFinished = true
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
@@ -467,14 +467,14 @@ dialogLoop:
 		cardFinished = true
 		if question == nil {
 			// 普通回复，更新卡片并结束
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
 		cardMu.Unlock()
 
 		// 有问题标记：更新卡片显示回复文本（已完成），再单独发问题选择卡片
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 
 		requestID := uuid.New().String()
 		questionCard := feishu.QuestionCard(question.Title, question.Options, question.HasCustom, requestID)

@@ -32,3 +32,4 @@ CLAUDE.md
 
 # Worktrees
 .worktrees/
+internal/session/sessions.json

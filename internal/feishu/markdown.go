@@ -89,6 +89,23 @@ func FormatMarkdownForCard(content string, compactMode bool) []interface{} {
 
 	// 处理未闭合的代码块（作为普通文本）
 	if inCodeBlock {
+		// 如果有未闭合的代码块，需要合并前面已保存的文本段（如果有的话）
+		var previousText string
+		if len(elements) > 0 {
+			if lastElem, ok := elements[len(elements)-1].(map[string]interface{}); ok {
+				if lastElem["tag"] == "markdown" {
+					// 移除最后一个 markdown 元素，准备合并
+					previousText = lastElem["content"].(string) + "\n"
+					elements = elements[:len(elements)-1]
+				}
+			}
+		}
+
+		// 合并前面的文本、代码块标记和代码内容
+		currentText.Reset()
+		if previousText != "" {
+			currentText.WriteString(previousText)
+		}
 		currentText.WriteString("```")
 		currentText.WriteString(codeLanguage)
 		currentText.WriteString("\n")
@@ -100,7 +117,8 @@ func FormatMarkdownForCard(content string, compactMode bool) []interface{} {
 		content := currentText.String()
 		// 移除末尾多余换行
 		content = strings.TrimSuffix(content, "\n")
-		if content != "" {
+		// 移除空白文本（仅包含空格、换行等）
+		if strings.TrimSpace(content) != "" {
 			elements = append(elements, map[string]interface{}{
 				"tag":     "markdown",
 				"content": content,
