@@ -12,14 +12,14 @@ const (
 )
 
 type StreamMessage struct {
-	Type      MessageType     `json:"type"`
-	SessionID string          `json:"session_id,omitempty"`
-	Message   json.RawMessage `json:"message,omitempty"`
-	Subtype   string          `json:"subtype,omitempty"`
-	Result    string          `json:"result,omitempty"`
-	CostUSD   float64         `json:"total_cost_usd,omitempty"`
-	DurationMs int64          `json:"duration_ms,omitempty"`
-	Usage     *Usage          `json:"usage,omitempty"`
+	Type       MessageType     `json:"type"`
+	SessionID  string          `json:"session_id,omitempty"`
+	Message    json.RawMessage `json:"message,omitempty"`
+	Subtype    string          `json:"subtype,omitempty"`
+	Result     string          `json:"result,omitempty"`
+	CostUSD    float64         `json:"total_cost_usd,omitempty"`
+	DurationMs int64           `json:"duration_ms,omitempty"`
+	Usage      *Usage          `json:"usage,omitempty"`
 }
 
 type Usage struct {

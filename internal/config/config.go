@@ -19,23 +19,23 @@ type FeishuConfig struct {
 type AnthropicConfig struct {
 	APIKey    string `json:"api_key"`
 	Model     string `json:"model"`                // 默认 claude-haiku-4-5-20250929
-	BaseURL   string `json:"base_url,omitempty"`    // 不配置则使用官方 https://api.anthropic.com
-	AuthToken string `json:"auth_token,omitempty"`  // 代理鉴权 token，不配置则用 api_key
+	BaseURL   string `json:"base_url,omitempty"`   // 不配置则使用官方 https://api.anthropic.com
+	AuthToken string `json:"auth_token,omitempty"` // 代理鉴权 token，不配置则用 api_key
 }
 
 type Config struct {
-	Feishu         FeishuConfig      `json:"feishu"`
-	Anthropic      AnthropicConfig   `json:"anthropic"`
-	DefaultCwd     string            `json:"default_cwd"`
-	Repos          map[string]string `json:"repos"`
-	IdleTimeoutMin int               `json:"idle_timeout_min"`
-	DangerousTools []string          `json:"dangerous_tools"`
-	ClaudeCLIPath          string            `json:"claude_cli_path"`
-	SessionModel           string            `json:"session_model,omitempty"`           // 新 session 默认使用的模型，默认 claude-sonnet-4-5
-	BotOpenID              string            `json:"bot_open_id,omitempty"`             // Bot 自身的 open_id，用于区分历史消息发送者
-	ChainUpgradeThreshold  int               `json:"chain_upgrade_threshold,omitempty"` // P2P 引用链触发升级群聊的轮数，默认 4
-	LogRetentionDays       int               `json:"log_retention_days,omitempty"`      // 日志保留天数，超过后自动删除，默认 7
-	CompactStream          bool              `json:"compact_stream,omitempty"`          // 流式输出时隐藏代码块，只显示过程和结果，默认 false
+	Feishu                FeishuConfig      `json:"feishu"`
+	Anthropic             AnthropicConfig   `json:"anthropic"`
+	DefaultCwd            string            `json:"default_cwd"`
+	Repos                 map[string]string `json:"repos"`
+	IdleTimeoutMin        int               `json:"idle_timeout_min"`
+	DangerousTools        []string          `json:"dangerous_tools"`
+	ClaudeCLIPath         string            `json:"claude_cli_path"`
+	SessionModel          string            `json:"session_model,omitempty"`           // 新 session 默认使用的模型，默认 claude-sonnet-4-5
+	BotOpenID             string            `json:"bot_open_id,omitempty"`             // Bot 自身的 open_id，用于区分历史消息发送者
+	ChainUpgradeThreshold int               `json:"chain_upgrade_threshold,omitempty"` // P2P 引用链触发升级群聊的轮数，默认 4
+	LogRetentionDays      int               `json:"log_retention_days,omitempty"`      // 日志保留天数，超过后自动删除，默认 7
+	CompactStream         bool              `json:"compact_stream,omitempty"`          // 流式输出时隐藏代码块，只显示过程和结果，默认 false
 
 	path string // 配置文件路径，运行时赋值，不序列化
 }

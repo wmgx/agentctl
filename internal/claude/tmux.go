@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	markerStart     = "<<CC_START>>"
-	markerEndPrefix = "<<CC_END:"
-	markerEndSuffix = ">>"
+	markerStart      = "<<CC_START>>"
+	markerEndPrefix  = "<<CC_END:"
+	markerEndSuffix  = ">>"
 	tailPollInterval = 100 * time.Millisecond
 	cleanupInterval  = 5 * time.Minute
 	idleTimeout      = time.Hour

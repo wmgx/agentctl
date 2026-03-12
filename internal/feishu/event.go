@@ -150,10 +150,10 @@ func (el *EventListener) Start(ctx context.Context) error {
 				}, nil
 			}
 			preview := cardJSON
-		if len(preview) > 100 {
-			preview = preview[:100]
-		}
-		log.Printf("[event] card action: failed to parse card JSON for sync response: %v", preview)
+			if len(preview) > 100 {
+				preview = preview[:100]
+			}
+			log.Printf("[event] card action: failed to parse card JSON for sync response: %v", preview)
 		}
 		return nil, nil
 	})

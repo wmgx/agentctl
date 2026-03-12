@@ -90,7 +90,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 		lastUpdate time.Time
 		throttle   = time.Second
 		// cardMu 序列化所有 UpdateCard 调用，防止流式更新和中断卡片乱序到达飞书
-		cardMu      sync.Mutex
+		cardMu       sync.Mutex
 		cardFinished bool
 	)
 

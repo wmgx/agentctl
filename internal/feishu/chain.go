@@ -9,7 +9,7 @@ const defaultChainCap = 1000
 
 // ChainEntry 记录一个 sender 的引用链状态
 type ChainEntry struct {
-	MsgIDs     []string  // 按时间顺序的消息 ID 列表
+	MsgIDs     []string // 按时间顺序的消息 ID 列表
 	LastActive time.Time
 	Dismissed  bool // 用户选择继续私聊后为 true，不再触发升级提示
 }

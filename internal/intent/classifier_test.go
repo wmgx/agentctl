@@ -209,6 +209,68 @@ func TestIsQuickActionSkill(t *testing.T) {
 	}
 }
 
+// TestExpectedClassificationBehavior 文档化预期的分类行为（参考用例）
+// 注意：这些是预期结果，实际分类由 LLM 决定，可能需要调整 prompt 才能达到预期
+func TestExpectedClassificationBehavior(t *testing.T) {
+	// 这些测试用例说明我们期望的分类行为，但由于依赖 Claude API，
+	// 无法在单元测试中验证。仅作为文档和回归测试参考。
+
+	expectedCases := []struct {
+		name           string
+		userMessage    string
+		expectedIntent IntentType
+		reason         string
+	}{
+		{
+			name: "深度调研对比分析 + 指定模型",
+			userMessage: "用opus模型 深度调研一下 https://memos-claw.openmem.net/#quickstart 和 " +
+				"https://openviking.ai/#quick-start 哪个更适合 接入openclaw 看下那个更具有长期发展能力 " +
+				"我还看中能不能回滚，可不可以被替换 替换会不会有损。 你可以跑一下分析一下",
+			expectedIntent: IntentSession,
+			reason:         "1) 用户明确指定模型（opus）→ 强烈信号要建群；2) 深度调研需要访问外部URL、对比分析、技术选型，预计需要4+轮交互",
+		},
+		{
+			name:           "仅指定模型（无其他复杂需求）",
+			userMessage:    "用haiku模型帮我写一个快速排序函数",
+			expectedIntent: IntentSession,
+			reason:         "用户明确指定模型（haiku）→ 要在 session 中使用该模型执行任务。即使任务简单，指定模型本身就是建群信号。",
+		},
+		{
+			name:           "技术选型评估",
+			userMessage:    "帮我对比一下 PostgreSQL 和 MySQL 哪个更适合我们的项目，从性能、可维护性、成本等方面分析",
+			expectedIntent: IntentSession,
+			reason:         "技术选型需要多维度分析和多轮讨论",
+		},
+		{
+			name:           "简单问答",
+			userMessage:    "什么是 DDD？",
+			expectedIntent: IntentDirect,
+			reason:         "概念解释，1轮即可回答",
+		},
+		{
+			name:           "写小函数",
+			userMessage:    "帮我写一个 Go 函数，计算两个整数的最大公约数",
+			expectedIntent: IntentDirect,
+			reason:         "小而明确的代码生成需求，2-3轮可完成",
+		},
+		{
+			name:           "实现功能模块",
+			userMessage:    "帮我实现一个完整的用户认证模块，包括注册、登录、JWT 验证",
+			expectedIntent: IntentSession,
+			reason:         "功能模块实现需要多文件、多轮迭代",
+		},
+	}
+
+	// 仅打印预期行为，不实际调用 API
+	for _, tc := range expectedCases {
+		t.Logf("[EXPECTED] %s:\n  Message: %s\n  Intent: %s\n  Reason: %s\n",
+			tc.name, tc.userMessage, tc.expectedIntent, tc.reason)
+	}
+
+	t.Log("注意：这些是预期行为的文档。实际分类结果取决于 LLM 和 prompt 质量。")
+	t.Log("如果实际分类与预期不符，需要调整 classifier.go 中的 defaultSystemPromptTpl。")
+}
+
 func TestCleanupEdgeCases(t *testing.T) {
 	t.Run("没有大括号", func(t *testing.T) {
 		raw := "没有JSON内容"
