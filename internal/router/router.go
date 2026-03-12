@@ -567,24 +567,23 @@ func (r *Router) handleSession(ctx context.Context, msg feishu.IncomingMessage, 
 	}
 
 	ch := r.pending.Wait(confirmID)
-	go func() {
-		select {
-		case action := <-ch:
-			log.Printf("[router] handleSession: got action=%s for confirm_id=%s", action.Action, confirmID)
-			switch action.Action {
-			case "confirm_session_with_cwd":
-				cwd := extractCwd(action, r.cfg.DefaultCwd)
-				r.maybeAddRepo(cwd)
-				r.createSession(ctx, msg, result, cwd, cardMsgID)
-			case "deny_session":
-				r.handleDirect(ctx, msg)
-			default:
-				log.Printf("[router] handleSession: unknown action=%s", action.Action)
-			}
-		case <-time.After(5 * time.Minute):
-			log.Printf("[router] handleSession: confirm timeout for msg %s", msg.MessageID)
+	select {
+	case action := <-ch:
+		log.Printf("[router] handleSession: got action=%s for confirm_id=%s", action.Action, confirmID)
+		switch action.Action {
+		case "confirm_session_with_cwd":
+			cwd := extractCwd(action, r.cfg.DefaultCwd)
+			r.maybeAddRepo(cwd)
+			r.createSession(ctx, msg, result, cwd, cardMsgID)
+		case "deny_session":
+			r.handleDirect(ctx, msg)
+		default:
+			log.Printf("[router] handleSession: unknown action=%s", action.Action)
 		}
-	}()
+	case <-time.After(5 * time.Minute):
+		log.Printf("[router] handleSession: confirm timeout for msg %s", msg.MessageID)
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.SessionConfirmCardDone(false, "确认超时"))
+	}
 }
 
 // maybeAddRepo 如果 cwd 是手动输入的新路径（不在配置 Repos 里且目录存在），则自动加入配置。
