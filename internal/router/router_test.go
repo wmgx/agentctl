@@ -25,7 +25,7 @@ func TestRouter_streamResponse(t *testing.T) {
 		feishuCli := &feishu.Client{}
 		classifier := &intent.Classifier{}
 		sessionStore, _ := session.NewStore("")
-		pending := &feishu.PendingAction{}
+		pending := feishu.NewPendingAction()
 
 		router := &Router{
 			cfg:        cfg,

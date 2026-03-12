@@ -348,43 +348,26 @@ func (r *Router) handleChainUpgradeWithCwd(ctx context.Context, msg feishu.Incom
 //   resumeSessionID: 复用的 CLI session ID（为空则创建新 session）
 // 返回：最终的 CLI session ID（用于 Session 绑定）
 func (r *Router) streamResponse(ctx context.Context, chatID, initialPrompt, replyToMsgID, resumeSessionID string) string {
-	// TODO: Task 2 will implement this method
-	return ""
-}
+	prompt := initialPrompt
 
-func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
-	log.Printf("[router] handleDirect: %s", msg.Text)
-
-	prompt := msg.Text
-	// P2P 引用场景：把链上历史消息拼入 prompt，让 Claude 知道上下文
-	if msg.ChatType == "p2p" && msg.ParentMessageID != "" {
-		if lines := r.fetchChainLines(ctx, msg.SenderID, msg.MessageID); len(lines) > 0 {
-			prompt = "以下是之前的对话历史：\n\n" +
-				strings.Join(lines, "\n") +
-				"\n\n当前消息：" + msg.Text
-		}
-	}
-
-	// 先发一个流式卡片作为回复占位
+	// 根据是否有 replyToMsgID 决定使用 ReplyCard 还是 SendCard
 	initCard := feishu.StreamingCard("正在思考...", false, "")
-	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, initCard)
+	var cardMsgID string
+	var err error
+	if replyToMsgID != "" {
+		// P2P 场景：回复原消息
+		cardMsgID, err = r.feishuCli.ReplyCard(ctx, replyToMsgID, initCard)
+	} else {
+		// Session 场景：发送新消息
+		cardMsgID, err = r.feishuCli.SendCard(ctx, chatID, initCard)
+	}
 	if err != nil {
-		log.Printf("[router] reply card error: %v, falling back to text", err)
-		text, err := r.adapter.RunOnce(ctx, prompt, "", false)
-		if err != nil {
-			r.feishuCli.ReplyText(ctx, msg.MessageID, fmt.Sprintf("处理失败: %v", err))
-			return
-		}
-		if text == "" {
-			text = "（无输出）"
-		}
-		r.feishuCli.ReplyText(ctx, msg.MessageID, text)
-		return
+		log.Printf("[router] streamResponse: send card error: %v", err)
+		return ""
 	}
 
 	// 支持问题卡片交互的对话循环
 	// 每轮：调用 Claude → 检测是否有问题标记 → 有则发卡片等待用户回答 → 继续循环
-	var resumeSessionID string
 	startTime := time.Now()
 
 dialogLoop:
@@ -494,7 +477,7 @@ dialogLoop:
 
 		requestID := uuid.New().String()
 		questionCard := feishu.QuestionCard(question.Title, question.Options, question.HasCustom, requestID)
-		if _, err := r.feishuCli.SendCard(ctx, msg.ChatID, questionCard); err != nil {
+		if _, err := r.feishuCli.SendCard(ctx, chatID, questionCard); err != nil {
 			log.Printf("[router] send question card error: %v", err)
 			break dialogLoop
 		}
@@ -513,14 +496,33 @@ dialogLoop:
 			log.Printf("[router] user answered: %s", chosen)
 			prompt = chosen
 		case <-time.After(10 * time.Minute):
-			log.Printf("[router] question card timeout for sender %s", msg.SenderID)
+			log.Printf("[router] question card timeout")
 			break dialogLoop
 		}
 
 		// 为新一轮回复新建一个卡片
 		newCard := feishu.StreamingCard("正在思考...", false, "")
-		cardMsgID, _ = r.feishuCli.SendCard(ctx, msg.ChatID, newCard)
+		cardMsgID, _ = r.feishuCli.SendCard(ctx, chatID, newCard)
 	}
+
+	return resumeSessionID
+}
+
+func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
+	log.Printf("[router] handleDirect: %s", msg.Text)
+
+	prompt := msg.Text
+	// P2P 引用场景：把链上历史消息拼入 prompt，让 Claude 知道上下文
+	if msg.ChatType == "p2p" && msg.ParentMessageID != "" {
+		if lines := r.fetchChainLines(ctx, msg.SenderID, msg.MessageID); len(lines) > 0 {
+			prompt = "以下是之前的对话历史：\n\n" +
+				strings.Join(lines, "\n") +
+				"\n\n当前消息：" + msg.Text
+		}
+	}
+
+	// 调用 streamResponse 处理流式回复
+	r.streamResponse(ctx, msg.ChatID, prompt, msg.MessageID, "")
 }
 
 // fetchChainLines 获取链上所有历史消息（不含当前消息），格式化为 [角色]: 文本 的列表
