@@ -5,11 +5,11 @@ import (
 	"sort"
 )
 
-func StreamingCard(content string, isComplete bool, tokenInfo string) map[string]interface{} {
-	return StreamingCardWithElapsed(content, isComplete, tokenInfo, 0)
+func StreamingCard(content string, isComplete bool, tokenInfo string, compactMode bool) map[string]interface{} {
+	return StreamingCardWithElapsed(content, isComplete, tokenInfo, 0, compactMode)
 }
 
-func StreamingCardWithElapsed(content string, isComplete bool, tokenInfo string, elapsedSec int) map[string]interface{} {
+func StreamingCardWithElapsed(content string, isComplete bool, tokenInfo string, elapsedSec int, compactMode bool) map[string]interface{} {
 	headerColor := "blue"
 	headerTitle := "Claude 回复中..."
 	if isComplete {
@@ -23,12 +23,8 @@ func StreamingCardWithElapsed(content string, isComplete bool, tokenInfo string,
 		headerTitle = fmt.Sprintf("Claude 回复中...（已用 %ds）", elapsedSec)
 	}
 
-	elements := []interface{}{
-		map[string]interface{}{
-			"tag":     "markdown",
-			"content": content,
-		},
-	}
+	// 使用 FormatMarkdownForCard 格式化内容
+	elements := FormatMarkdownForCard(content, compactMode)
 
 	if tokenInfo != "" {
 		elements = append(elements,
@@ -550,18 +546,14 @@ func ConfirmCard(title, description, requestID string) map[string]interface{} {
 
 // StreamingCardWithAbort 生成流式回复卡片（进行中），底部附加停止按钮。
 // abortID 是停止按钮的 request_id，用于 PendingAction 匹配。
-func StreamingCardWithAbort(content, tokenInfo string, elapsedSec int, abortID string) map[string]interface{} {
+func StreamingCardWithAbort(content, tokenInfo string, elapsedSec int, abortID string, compactMode bool) map[string]interface{} {
 	headerTitle := "Claude 回复中..."
 	if elapsedSec > 0 {
 		headerTitle = fmt.Sprintf("Claude 回复中...（已用 %ds）", elapsedSec)
 	}
 
-	elements := []interface{}{
-		map[string]interface{}{
-			"tag":     "markdown",
-			"content": content,
-		},
-	}
+	// 使用 FormatMarkdownForCard 格式化内容
+	elements := FormatMarkdownForCard(content, compactMode)
 
 	if tokenInfo != "" {
 		elements = append(elements,
@@ -668,18 +660,14 @@ func StreamingCardStopping() map[string]interface{} {
 
 // StreamingCardAborted 生成流式回复卡片的已中断状态。
 // 保留已输出内容，header 标记为"已中断"。
-func StreamingCardAborted(content, tokenInfo string, elapsedSec int) map[string]interface{} {
+func StreamingCardAborted(content, tokenInfo string, elapsedSec int, compactMode bool) map[string]interface{} {
 	headerTitle := "⛔ 已中断"
 	if elapsedSec > 0 {
 		headerTitle = fmt.Sprintf("⛔ 已中断（用时 %ds）", elapsedSec)
 	}
 
-	elements := []interface{}{
-		map[string]interface{}{
-			"tag":     "markdown",
-			"content": content,
-		},
-	}
+	// 使用 FormatMarkdownForCard 格式化内容
+	elements := FormatMarkdownForCard(content, compactMode)
 
 	if tokenInfo != "" {
 		elements = append(elements,

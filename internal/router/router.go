@@ -352,7 +352,7 @@ func (r *Router) streamResponse(ctx context.Context, chatID, initialPrompt, repl
 	prompt := initialPrompt
 
 	// 根据是否有 replyToMsgID 决定使用 ReplyCard 还是 SendCard
-	initCard := feishu.StreamingCard("正在思考...", false, "")
+	initCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 	var cardMsgID string
 	var err error
 	if replyToMsgID != "" {
@@ -502,7 +502,7 @@ dialogLoop:
 		}
 
 		// 为新一轮回复新建一个卡片
-		newCard := feishu.StreamingCard("正在思考...", false, "")
+		newCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 		cardMsgID, _ = r.feishuCli.SendCard(ctx, chatID, newCard)
 	}
 

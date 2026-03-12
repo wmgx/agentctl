@@ -87,6 +87,14 @@ func FormatMarkdownForCard(content string, compactMode bool) []interface{} {
 		}
 	}
 
+	// 处理未闭合的代码块（作为普通文本）
+	if inCodeBlock {
+		currentText.WriteString("```")
+		currentText.WriteString(codeLanguage)
+		currentText.WriteString("\n")
+		currentText.WriteString(strings.Join(codeBlockLines, "\n"))
+	}
+
 	// 添加剩余文本
 	if currentText.Len() > 0 {
 		content := currentText.String()
@@ -98,6 +106,11 @@ func FormatMarkdownForCard(content string, compactMode bool) []interface{} {
 				"content": content,
 			})
 		}
+	}
+
+	// 如果最终 elements 为空且没有内容，返回空数组
+	if len(elements) == 0 {
+		return []interface{}{}
 	}
 
 	return elements

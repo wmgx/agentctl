@@ -78,7 +78,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	}()
 
 	startTime := time.Now()
-	card := feishu.StreamingCardWithAbort("正在思考...", "", 0, abortID)
+	card := feishu.StreamingCardWithAbort("正在思考...", "", 0, abortID, h.cfg.CompactStream)
 	cardMsgID, err := h.feishuCli.SendCard(ctx, msg.ChatID, card)
 	if err != nil {
 		log.Printf("send card error: %v", err)
@@ -115,7 +115,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 				displayText := feishu.FilterCodeBlocks(textBuf.String(), h.cfg.CompactStream)
 				cardMu.Lock()
 				if !cardFinished {
-					h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+					h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID, h.cfg.CompactStream))
 					lastUpdate = time.Now()
 				}
 				cardMu.Unlock()
@@ -160,9 +160,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	cardMu.Lock()
 	cardFinished = true
 	if userAborted.Load() {
-		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(finalText, tokenInfo, elapsed))
+		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(finalText, tokenInfo, elapsed, h.cfg.CompactStream))
 	} else {
-		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed))
+		h.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(finalText, true, tokenInfo, elapsed, h.cfg.CompactStream))
 	}
 	cardMu.Unlock()
 
