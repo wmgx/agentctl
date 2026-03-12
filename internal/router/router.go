@@ -340,6 +340,18 @@ func (r *Router) handleChainUpgradeWithCwd(ctx context.Context, msg feishu.Incom
 	r.chainTracker.Reset(msg.SenderID)
 }
 
+// streamResponse 执行流式回复，支持问题卡片交互、中断按钮、多轮对话循环
+// 参数：
+//   chatID: 目标群 ID
+//   initialPrompt: 初始 prompt
+//   replyToMsgID: 回复目标消息 ID（为空则发送新消息到 chatID）
+//   resumeSessionID: 复用的 CLI session ID（为空则创建新 session）
+// 返回：最终的 CLI session ID（用于 Session 绑定）
+func (r *Router) streamResponse(ctx context.Context, chatID, initialPrompt, replyToMsgID, resumeSessionID string) string {
+	// TODO: Task 2 will implement this method
+	return ""
+}
+
 func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
 	log.Printf("[router] handleDirect: %s", msg.Text)
 
