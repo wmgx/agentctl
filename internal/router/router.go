@@ -661,6 +661,24 @@ func (r *Router) createSession(ctx context.Context, msg feishu.IncomingMessage, 
 
 	r.feishuCli.SendText(ctx, chatID, fmt.Sprintf("会话已创建\n主题: %s\n工作目录: %s\n\n正在处理你的请求...", name, cwd))
 
+	// === 新增：转发用户消息并自动回复 ===
+
+	// 1. 发送用户原始消息到新群
+	if _, err := r.feishuCli.SendText(ctx, chatID, msg.Text); err != nil {
+		log.Printf("[session] send user message error: %v", err)
+		// 非致命错误，继续尝试自动回复
+	}
+
+	// 2. 自动开始流式回复，绑定 Session 的 CLI session ID
+	cliSessionID := r.streamResponse(ctx, chatID, msg.Text, "", sess.CLISessionID)
+
+	// 3. 更新 Session 的 CLI session ID（如果之前为空）
+	if sess.CLISessionID == "" && cliSessionID != "" {
+		sess.CLISessionID = cliSessionID
+		r.store.Save()
+		log.Printf("[session] bound CLI session ID: %s", cliSessionID)
+	}
+
 	// 建群完成后更新确认卡片，显示群名（替代单独发送的通知消息）
 	if confirmCardMsgID != "" {
 		if err := r.feishuCli.UpdateCard(ctx, confirmCardMsgID, feishu.SessionConfirmCardDone(true, groupName)); err != nil {
