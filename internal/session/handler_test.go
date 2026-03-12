@@ -27,7 +27,7 @@ func TestHandler_HandleMessage_InjectsSystemPrompt(t *testing.T) {
 
 		cfg := &config.Config{}
 		feishuCli := &feishu.Client{}
-		store := NewStore("")
+		store, _ := NewStore("")
 		adapter := &claude.Adapter{}
 		pending := feishu.NewPendingAction()
 
