@@ -354,7 +354,7 @@ func (r *Router) handleDirect(ctx context.Context, msg feishu.IncomingMessage) {
 	}
 
 	// 先发一个流式卡片作为回复占位
-	initCard := feishu.StreamingCard("正在思考...", false, "")
+	initCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 	cardMsgID, err := r.feishuCli.ReplyCard(ctx, msg.MessageID, initCard)
 	if err != nil {
 		log.Printf("[router] reply card error: %v, falling back to text", err)
@@ -397,7 +397,7 @@ dialogLoop:
 
 		// 更新卡片为带停止按钮的进行中状态
 		elapsed := int(time.Since(startTime).Seconds())
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort("正在思考...", "", elapsed, abortID, r.cfg.CompactStream))
 
 		var (
 			textBuf    strings.Builder
@@ -425,7 +425,7 @@ dialogLoop:
 					displayText := filterCodeBlocks(textBuf.String(), r.cfg.CompactStream)
 					cardMu.Lock()
 					if !cardFinished {
-						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID))
+						r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithAbort(displayText, "", elapsed, abortID, r.cfg.CompactStream))
 						lastUpdate = time.Now()
 					}
 					cardMu.Unlock()
@@ -455,7 +455,7 @@ dialogLoop:
 			// 持锁发送最终卡片，确保它在所有流式更新之后到达飞书
 			cardMu.Lock()
 			cardFinished = true
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardAborted(cleanText, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
@@ -471,14 +471,14 @@ dialogLoop:
 		cardFinished = true
 		if question == nil {
 			// 普通回复，更新卡片并结束
-			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+			r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 			cardMu.Unlock()
 			break dialogLoop
 		}
 		cardMu.Unlock()
 
 		// 有问题标记：更新卡片显示回复文本（已完成），再单独发问题选择卡片
-		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed))
+		r.feishuCli.UpdateCard(ctx, cardMsgID, feishu.StreamingCardWithElapsed(cleanText, true, tokenInfo, elapsed, r.cfg.CompactStream))
 
 		requestID := uuid.New().String()
 		questionCard := feishu.QuestionCard(question.Title, question.Options, question.HasCustom, requestID)
@@ -506,7 +506,7 @@ dialogLoop:
 		}
 
 		// 为新一轮回复新建一个卡片
-		newCard := feishu.StreamingCard("正在思考...", false, "")
+		newCard := feishu.StreamingCard("正在思考...", false, "", r.cfg.CompactStream)
 		cardMsgID, _ = r.feishuCli.SendCard(ctx, msg.ChatID, newCard)
 	}
 }
