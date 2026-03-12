@@ -27,12 +27,19 @@ const (
 
 var ansiRe = regexp.MustCompile(`\x1b\[\??[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]|\r|[\x00-\x08\x0e-\x1f]`)
 
+// tmuxSession represents a managed tmux session.
+type tmuxSession struct {
+	name string
+}
+
 // TmuxRunner manages tmux sessions for running Claude CLI.
 type TmuxRunner struct {
-	dir      string
-	activeMu sync.Mutex
-	active   map[string]time.Time
-	stopCh   chan struct{}
+	dir        string
+	activeMu   sync.Mutex
+	active     map[string]time.Time
+	sessionsMu sync.RWMutex
+	sessions   map[string]*tmuxSession
+	stopCh     chan struct{}
 }
 
 // NewTmuxRunner creates a TmuxRunner with the given data directory.
@@ -40,9 +47,10 @@ func NewTmuxRunner(dataDir string) *TmuxRunner {
 	dir := filepath.Join(dataDir, "tmux")
 	os.MkdirAll(dir, 0755)
 	r := &TmuxRunner{
-		dir:    dir,
-		active: make(map[string]time.Time),
-		stopCh: make(chan struct{}),
+		dir:      dir,
+		active:   make(map[string]time.Time),
+		sessions: make(map[string]*tmuxSession),
+		stopCh:   make(chan struct{}),
 	}
 	go r.cleanupLoop()
 	return r
@@ -369,4 +377,30 @@ func isNoiseLine(line string) bool {
 		return true
 	}
 	return false
+}
+
+// SendKeys 向指定 tmux session 发送按键输入
+// 使用 -l (literal) 模式避免特殊字符转义问题
+func (r *TmuxRunner) SendKeys(sessionID, text string) error {
+	r.sessionsMu.RLock()
+	sess, exists := r.sessions[sessionID]
+	r.sessionsMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+
+	// 使用 -l (literal) 模式发送文本，避免特殊字符被解释
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", sess.name, text)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tmux send-keys -l failed: %w", err)
+	}
+
+	// 发送回车键
+	cmd = exec.Command("tmux", "send-keys", "-t", sess.name, "Enter")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tmux send-keys Enter failed: %w", err)
+	}
+
+	return nil
 }
