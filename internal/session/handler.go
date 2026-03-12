@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -95,10 +96,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 	)
 
 	h.adapter.Run(runCtx, claude.RunOptions{
-		Prompt:          msg.Text,
-		Cwd:             sess.WorkingDir,
-		ResumeSessionID: sess.CLISessionID,
-		Model:           sess.Model,
+		Prompt:             msg.Text,
+		Cwd:                sess.WorkingDir,
+		ResumeSessionID:    sess.CLISessionID,
+		Model:              sess.Model,
+		AppendSystemPrompt: `当需要用户选择时（无论是 brainstorming、技术方案、参数选择等），优先使用 AskUserQuestion 工具展示交互式卡片，而非纯文本列表（如"A. 选项1 B. 选项2"）。`,
 	}, func(event claude.Event) {
 		switch event.Type {
 		case "session_init":
@@ -122,6 +124,12 @@ func (h *Handler) HandleMessage(ctx context.Context, msg feishu.IncomingMessage)
 		case "tool_use":
 			if h.isDangerous(event.ToolName, event.ToolInput) {
 				h.handleDangerousTool(ctx, msg.ChatID, event)
+			}
+
+			// 检测 AskUserQuestion 工具调用
+			if event.ToolName == "AskUserQuestion" {
+				go h.handleAskUserQuestion(ctx, sess, event.ToolInput)
+				// 不使用 break，因为需要让事件处理继续进行（简洁模式的注释提示等）
 			}
 			// 简洁模式：不显示工具执行提示，只保留思考和结果
 			// textBuf.WriteString(fmt.Sprintf("\n\n🔧 **%s** 执行中...\n", event.ToolName))
@@ -183,5 +191,93 @@ func (h *Handler) handleDangerousTool(ctx context.Context, chatID string, event 
 		}
 	case <-time.After(5 * time.Minute):
 		log.Printf("Tool approval timeout for %s", event.ToolName)
+	}
+}
+
+// handleAskUserQuestion 处理 AskUserQuestion 工具调用
+// 解析 tool_input，生成飞书交互式卡片，等待用户选择后注入答案
+func (h *Handler) handleAskUserQuestion(ctx context.Context, sess *Session, toolInput string) {
+	// 解析 tool_input
+	var input struct {
+		Questions []struct {
+			Question    string `json:"question"`
+			Header      string `json:"header"`
+			MultiSelect bool   `json:"multiSelect"`
+			Options     []struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+
+	if err := json.Unmarshal([]byte(toolInput), &input); err != nil {
+		log.Printf("Failed to parse AskUserQuestion input: %v", err)
+		return
+	}
+
+	if len(input.Questions) == 0 {
+		log.Printf("No questions in AskUserQuestion input")
+		return
+	}
+
+	// 当前只处理第一个问题（多问题场景需要 future work）
+	// TODO: 支持多问题场景
+	q := input.Questions[0]
+
+	// 提取选项标签
+	var options []string
+	for _, opt := range q.Options {
+		// 如果有 description，展示为 "标签 - 描述"
+		if opt.Description != "" {
+			options = append(options, fmt.Sprintf("%s - %s", opt.Label, opt.Description))
+		} else {
+			options = append(options, opt.Label)
+		}
+	}
+
+	// 生成唯一的 action ID 用于 pending 等待
+	actionID := uuid.New().String()
+
+	// 构造问题标题
+	title := q.Question
+	if q.Header != "" {
+		title = q.Header
+	}
+
+	// 发送交互式卡片
+	card := feishu.QuestionCard(title, options, false, actionID)
+	_, err := h.feishuCli.SendCard(ctx, sess.ChatID, card)
+	if err != nil {
+		log.Printf("Failed to send question card: %v", err)
+		return
+	}
+
+	// 等待用户选择（超时 5 分钟）
+	actionCh := h.pending.Wait(actionID)
+	select {
+	case action := <-actionCh:
+		if action.Action == "choose_option" {
+			// 提取用户选择的答案（移除 description 部分，只保留标签）
+			chosen := action.Value["chosen"]
+			for _, opt := range q.Options {
+				expectedWithDesc := fmt.Sprintf("%s - %s", opt.Label, opt.Description)
+				if chosen == expectedWithDesc || chosen == opt.Label {
+					chosen = opt.Label
+					break
+				}
+			}
+			// 将答案注入回 CLI
+			h.sendAnswerToCLI(sess, chosen)
+		}
+	case <-time.After(5 * time.Minute):
+		log.Printf("Timeout waiting for user answer")
+		h.feishuCli.SendText(ctx, sess.ChatID, "⏱️ 选择超时，请重新发送消息")
+	}
+}
+
+// sendAnswerToCLI 将用户选择的答案注入回 Claude CLI 的 stdin
+func (h *Handler) sendAnswerToCLI(sess *Session, answer string) {
+	if err := h.adapter.SendAnswerToSession(sess.CLISessionID, answer); err != nil {
+		log.Printf("Failed to send answer to CLI: %v", err)
 	}
 }

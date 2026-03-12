@@ -43,6 +43,24 @@ func (a *Adapter) Stop() {
 	a.tmux.Stop()
 }
 
+// SendAnswerToSession 向指定 Claude CLI session 发送用户答案
+// 答案会被包装为 JSON 格式: {"answer": "用户选择的答案"}
+func (a *Adapter) SendAnswerToSession(sessionID, answer string) error {
+	// 使用 json.Marshal 安全构造 JSON(自动转义特殊字符)
+	responseObj := map[string]string{"answer": answer}
+	answerJSON, err := json.Marshal(responseObj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal answer JSON: %w", err)
+	}
+
+	// 委托给 TmuxRunner.SendKeys
+	if err := a.tmux.SendKeys(sessionID, string(answerJSON)); err != nil {
+		return fmt.Errorf("failed to send answer to session: %w", err)
+	}
+
+	return nil
+}
+
 func (a *Adapter) envMap() map[string]string {
 	env := make(map[string]string)
 	if a.BaseURL != "" {
